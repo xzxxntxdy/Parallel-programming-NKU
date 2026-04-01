@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="580" viewBox="0 0 1000 580">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="500.00" y="30.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="22" text-anchor="middle" font-weight="bold" fill="#111">Matvec Steady-State vs Amortized Cost (RelWithDebInfo, n=1536)</text>
+<line x1="105.00" y1="475.00" x2="965.00" y2="475.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="480.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">0.0</text>
+<line x1="105.00" y1="391.00" x2="965.00" y2="391.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="396.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">0.8</text>
+<line x1="105.00" y1="307.00" x2="965.00" y2="307.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="312.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">1.6</text>
+<line x1="105.00" y1="223.00" x2="965.00" y2="223.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="228.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">2.4</text>
+<line x1="105.00" y1="139.00" x2="965.00" y2="139.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="144.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">3.2</text>
+<line x1="105.00" y1="55.00" x2="965.00" y2="55.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="60.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">4.0</text>
+<line x1="105.00" y1="55.00" x2="105.00" y2="475.00" stroke="#111" stroke-width="1.5" />
+<line x1="105.00" y1="475.00" x2="965.00" y2="475.00" stroke="#111" stroke-width="1.5" />
+<text x="248.33" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">cache_opt</text>
+<rect x="206.33" y="337.63" width="39.00" height="137.37" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="225.83" y="331.63" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">1.31</text>
+<rect x="248.33" y="140.96" width="39.00" height="334.04" fill="#8c564b" stroke="none" stroke-width="1" />
+<text x="267.83" y="134.96" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">3.18</text>
+<text x="535.00" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">unroll</text>
+<rect x="493.00" y="403.71" width="39.00" height="71.29" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="512.50" y="397.71" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">0.68</text>
+<rect x="535.00" y="229.35" width="39.00" height="245.65" fill="#8c564b" stroke="none" stroke-width="1" />
+<text x="554.50" y="223.35" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">2.34</text>
+<text x="821.67" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">extreme</text>
+<rect x="779.67" y="424.68" width="39.00" height="50.32" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="799.17" y="418.68" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">0.48</text>
+<rect x="821.67" y="339.97" width="39.00" height="135.03" fill="#8c564b" stroke="none" stroke-width="1" />
+<text x="841.17" y="333.97" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">1.29</text>
+<text x="26.00" y="265.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="18" text-anchor="middle" font-weight="normal" fill="#111" transform="rotate(-90.00 26.00 265.00)">Cost per run (ms)</text>
+<rect x="725.00" y="56.00" width="16.00" height="16.00" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="749.00" y="69.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">steady</text>
+<rect x="725.00" y="80.00" width="16.00" height="16.00" fill="#8c564b" stroke="none" stroke-width="1" />
+<text x="749.00" y="93.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">amortized</text>
+</svg>

@@ -1,0 +1,34 @@
+# Local instructions / private notes
+AGENTS.md
+
+# Build outputs
+build/
+
+# Raw profiling results
+vtune/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+*~
+
+# LaTeX intermediate files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.xdv

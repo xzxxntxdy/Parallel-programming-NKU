@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="480.00" y="30.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="22" text-anchor="middle" font-weight="bold" fill="#111">Matvec Runtime by Problem Size (RelWithDebInfo)</text>
+<line x1="95.00" y1="470.00" x2="925.00" y2="470.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="85.00" y="475.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">0.0</text>
+<line x1="95.00" y1="387.00" x2="925.00" y2="387.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="85.00" y="392.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">4.0</text>
+<line x1="95.00" y1="304.00" x2="925.00" y2="304.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="85.00" y="309.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">8.0</text>
+<line x1="95.00" y1="221.00" x2="925.00" y2="221.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="85.00" y="226.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">12.0</text>
+<line x1="95.00" y1="138.00" x2="925.00" y2="138.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="85.00" y="143.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">16.0</text>
+<line x1="95.00" y1="55.00" x2="925.00" y2="55.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="85.00" y="60.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">20.0</text>
+<line x1="95.00" y1="55.00" x2="95.00" y2="470.00" stroke="#111" stroke-width="1.5" />
+<line x1="95.00" y1="470.00" x2="925.00" y2="470.00" stroke="#111" stroke-width="1.5" />
+<line x1="95.00" y1="470.00" x2="95.00" y2="476.00" stroke="#111" stroke-width="1" />
+<text x="95.00" y="498.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">256</text>
+<line x1="371.67" y1="470.00" x2="371.67" y2="476.00" stroke="#111" stroke-width="1" />
+<text x="371.67" y="498.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">512</text>
+<line x1="648.33" y1="470.00" x2="648.33" y2="476.00" stroke="#111" stroke-width="1" />
+<text x="648.33" y="498.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">1024</text>
+<line x1="925.00" y1="470.00" x2="925.00" y2="476.00" stroke="#111" stroke-width="1" />
+<text x="925.00" y="498.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">1536</text>
+<polyline points="95.00,469.36 371.67,464.14 648.33,412.80 925.00,237.80" fill="none" stroke="#222222" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="95.00" cy="469.36" r="4.50" fill="#222222" stroke="none" stroke-width="1" />
+<circle cx="371.67" cy="464.14" r="4.50" fill="#222222" stroke="none" stroke-width="1" />
+<circle cx="648.33" cy="412.80" r="4.50" fill="#222222" stroke="none" stroke-width="1" />
+<circle cx="925.00" cy="237.80" r="4.50" fill="#222222" stroke="none" stroke-width="1" />
+<polyline points="95.00,469.53 371.67,467.47 648.33,461.49 925.00,442.85" fill="none" stroke="#1f77b4" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="95.00" cy="469.53" r="4.50" fill="#1f77b4" stroke="none" stroke-width="1" />
+<circle cx="371.67" cy="467.47" r="4.50" fill="#1f77b4" stroke="none" stroke-width="1" />
+<circle cx="648.33" cy="461.49" r="4.50" fill="#1f77b4" stroke="none" stroke-width="1" />
+<circle cx="925.00" cy="442.85" r="4.50" fill="#1f77b4" stroke="none" stroke-width="1" />
+<polyline points="95.00,469.79 371.67,469.06 648.33,466.26 925.00,455.91" fill="none" stroke="#ff7f0e" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="95.00" cy="469.79" r="4.50" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<circle cx="371.67" cy="469.06" r="4.50" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<circle cx="648.33" cy="466.26" r="4.50" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<circle cx="925.00" cy="455.91" r="4.50" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<polyline points="95.00,469.85 371.67,469.11 648.33,465.66 925.00,460.06" fill="none" stroke="#2ca02c" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="95.00" cy="469.85" r="4.50" fill="#2ca02c" stroke="none" stroke-width="1" />
+<circle cx="371.67" cy="469.11" r="4.50" fill="#2ca02c" stroke="none" stroke-width="1" />
+<circle cx="648.33" cy="465.66" r="4.50" fill="#2ca02c" stroke="none" stroke-width="1" />
+<circle cx="925.00" cy="460.06" r="4.50" fill="#2ca02c" stroke="none" stroke-width="1" />
+<text x="24.00" y="262.50" font-family="Times New Roman, DejaVu Serif, serif" font-size="18" text-anchor="middle" font-weight="normal" fill="#111" transform="rotate(-90.00 24.00 262.50)">Average runtime (ms)</text>
+<text x="510.00" y="540.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="18" text-anchor="middle" font-weight="normal" fill="#111">Problem size n</text>
+<line x1="725.00" y1="67.00" x2="743.00" y2="67.00" stroke="#222222" stroke-width="3" />
+<circle cx="734.00" cy="67.00" r="4.00" fill="#222222" stroke="none" stroke-width="1" />
+<text x="753.00" y="72.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">naive</text>
+<line x1="725.00" y1="91.00" x2="743.00" y2="91.00" stroke="#1f77b4" stroke-width="3" />
+<circle cx="734.00" cy="91.00" r="4.00" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="753.00" y="96.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">cache_opt</text>
+<line x1="725.00" y1="115.00" x2="743.00" y2="115.00" stroke="#ff7f0e" stroke-width="3" />
+<circle cx="734.00" cy="115.00" r="4.00" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<text x="753.00" y="120.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">unroll</text>
+<line x1="725.00" y1="139.00" x2="743.00" y2="139.00" stroke="#2ca02c" stroke-width="3" />
+<circle cx="734.00" cy="139.00" r="4.00" fill="#2ca02c" stroke="none" stroke-width="1" />
+<text x="753.00" y="144.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">extreme</text>
+</svg>

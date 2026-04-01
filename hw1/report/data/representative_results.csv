@@ -1,0 +1,17 @@
+mode,task,algo,n,repeat,warmup,prep_ms,total_ms,avg_ms,min_ms,check,max_abs_err,max_rel_err
+RelWithDebInfo,matvec,naive,2048,12,3,0.0,339.621,28.302,22.682,OK,4.52971e-14,1.322554e-14
+RelWithDebInfo,matvec,cache_opt,2048,12,3,44.182,26.977,2.248,2.093,OK,4.52971e-14,1.322554e-14
+RelWithDebInfo,matvec,unroll,2048,12,3,50.674,29.46,2.455,1.874,OK,1.154632e-14,9.880985e-15
+RelWithDebInfo,matvec,extreme,2048,12,3,10.936,19.984,1.665,1.494,OK,8.437695e-15,8.326673e-15
+RelWithDebInfo,sum,naive,100000000,8,3,0.0,483.887,60.486,56.892,OK,6.486767e-11,4.676629e-14
+RelWithDebInfo,sum,superscalar,100000000,8,3,0.0,335.863,41.983,39.851,OK,3.889702e-10,2.804277e-13
+RelWithDebInfo,sum,unroll,100000000,8,3,0.0,364.491,45.561,41.923,OK,3.889702e-10,2.804277e-13
+RelWithDebInfo,sum,extreme,100000000,8,3,0.0,324.279,40.535,36.755,OK,2.043428e-10,1.473207e-13
+Release,matvec,naive,2048,10,3,0.0,187.1,18.71,16.646,OK,4.52971e-14,1.322554e-14
+Release,matvec,cache_opt,2048,10,3,23.139,24.307,2.431,2.284,OK,4.52971e-14,1.322554e-14
+Release,matvec,unroll,2048,10,3,25.48,18.606,1.861,1.602,OK,1.154632e-14,9.880985e-15
+Release,matvec,extreme,2048,10,3,11.128,18.35,1.835,1.612,OK,8.437695e-15,8.326673e-15
+Release,sum,naive,100000000,8,3,0.0,470.257,58.782,55.612,OK,6.486767e-11,4.676629e-14
+Release,sum,superscalar,100000000,8,3,0.0,349.417,43.677,39.525,OK,3.889702e-10,2.804277e-13
+Release,sum,unroll,100000000,8,3,0.0,344.492,43.062,39.772,OK,3.889702e-10,2.804277e-13
+Release,sum,extreme,100000000,8,3,0.0,313.905,39.238,36.002,OK,2.043428e-10,1.473207e-13

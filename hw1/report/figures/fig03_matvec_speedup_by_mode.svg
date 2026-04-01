@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="580" viewBox="0 0 1000 580">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="500.00" y="30.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="22" text-anchor="middle" font-weight="bold" fill="#111">Matvec Speedup over Naive at n=1536</text>
+<line x1="105.00" y1="475.00" x2="965.00" y2="475.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="480.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">0.0</text>
+<line x1="105.00" y1="391.00" x2="965.00" y2="391.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="396.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">6.0</text>
+<line x1="105.00" y1="307.00" x2="965.00" y2="307.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="312.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">12.0</text>
+<line x1="105.00" y1="223.00" x2="965.00" y2="223.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="228.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">18.0</text>
+<line x1="105.00" y1="139.00" x2="965.00" y2="139.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="144.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">24.0</text>
+<line x1="105.00" y1="55.00" x2="965.00" y2="55.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="60.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">30.0</text>
+<line x1="105.00" y1="55.00" x2="105.00" y2="475.00" stroke="#111" stroke-width="1.5" />
+<line x1="105.00" y1="475.00" x2="965.00" y2="475.00" stroke="#111" stroke-width="1.5" />
+<text x="320.00" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">RelWithDebInfo</text>
+<rect x="257.00" y="355.26" width="39.00" height="119.74" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="276.50" y="349.26" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">8.55</text>
+<rect x="299.00" y="244.26" width="39.00" height="230.74" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<text x="318.50" y="238.26" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">16.48</text>
+<rect x="341.00" y="148.09" width="39.00" height="326.91" fill="#2ca02c" stroke="none" stroke-width="1" />
+<text x="360.50" y="142.09" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">23.35</text>
+<text x="750.00" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">Release</text>
+<rect x="687.00" y="341.40" width="39.00" height="133.60" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="706.50" y="335.40" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">9.54</text>
+<rect x="729.00" y="260.03" width="39.00" height="214.97" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<text x="748.50" y="254.03" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">15.36</text>
+<rect x="771.00" y="227.17" width="39.00" height="247.83" fill="#2ca02c" stroke="none" stroke-width="1" />
+<text x="790.50" y="221.17" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">17.70</text>
+<text x="26.00" y="265.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="18" text-anchor="middle" font-weight="normal" fill="#111" transform="rotate(-90.00 26.00 265.00)">Speedup versus naive (x)</text>
+<rect x="725.00" y="56.00" width="16.00" height="16.00" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="749.00" y="69.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">cache_opt</text>
+<rect x="725.00" y="80.00" width="16.00" height="16.00" fill="#ff7f0e" stroke="none" stroke-width="1" />
+<text x="749.00" y="93.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">unroll</text>
+<rect x="725.00" y="104.00" width="16.00" height="16.00" fill="#2ca02c" stroke="none" stroke-width="1" />
+<text x="749.00" y="117.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">extreme</text>
+</svg>

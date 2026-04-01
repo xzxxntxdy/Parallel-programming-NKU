@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="580" viewBox="0 0 1000 580">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="500.00" y="30.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="22" text-anchor="middle" font-weight="bold" fill="#111">Representative Large-Case Matvec Runtime (n=2048)</text>
+<line x1="105.00" y1="475.00" x2="965.00" y2="475.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="480.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">0.0</text>
+<line x1="105.00" y1="391.00" x2="965.00" y2="391.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="396.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">8.0</text>
+<line x1="105.00" y1="307.00" x2="965.00" y2="307.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="312.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">16.0</text>
+<line x1="105.00" y1="223.00" x2="965.00" y2="223.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="228.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">24.0</text>
+<line x1="105.00" y1="139.00" x2="965.00" y2="139.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="144.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">32.0</text>
+<line x1="105.00" y1="55.00" x2="965.00" y2="55.00" stroke="#d0d0d0" stroke-width="1" />
+<text x="95.00" y="60.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="end" font-weight="normal" fill="#111">40.0</text>
+<line x1="105.00" y1="55.00" x2="105.00" y2="475.00" stroke="#111" stroke-width="1.5" />
+<line x1="105.00" y1="475.00" x2="965.00" y2="475.00" stroke="#111" stroke-width="1.5" />
+<text x="212.50" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">naive</text>
+<rect x="170.50" y="177.83" width="39.00" height="297.17" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="190.00" y="171.83" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">28.30</text>
+<rect x="212.50" y="278.54" width="39.00" height="196.46" fill="#d62728" stroke="none" stroke-width="1" />
+<text x="232.00" y="272.54" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">18.71</text>
+<text x="427.50" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">cache_opt</text>
+<rect x="385.50" y="451.40" width="39.00" height="23.60" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="405.00" y="445.40" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">2.25</text>
+<rect x="427.50" y="449.47" width="39.00" height="25.53" fill="#d62728" stroke="none" stroke-width="1" />
+<text x="447.00" y="443.47" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">2.43</text>
+<text x="642.50" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">unroll</text>
+<rect x="600.50" y="449.22" width="39.00" height="25.78" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="620.00" y="443.22" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">2.46</text>
+<rect x="642.50" y="455.46" width="39.00" height="19.54" fill="#d62728" stroke="none" stroke-width="1" />
+<text x="662.00" y="449.46" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">1.86</text>
+<text x="857.50" y="503.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="middle" font-weight="normal" fill="#111">extreme</text>
+<rect x="815.50" y="457.52" width="39.00" height="17.48" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="835.00" y="451.52" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">1.67</text>
+<rect x="857.50" y="455.73" width="39.00" height="19.27" fill="#d62728" stroke="none" stroke-width="1" />
+<text x="877.00" y="449.73" font-family="Times New Roman, DejaVu Serif, serif" font-size="13" text-anchor="middle" font-weight="normal" fill="#111">1.83</text>
+<text x="26.00" y="265.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="18" text-anchor="middle" font-weight="normal" fill="#111" transform="rotate(-90.00 26.00 265.00)">Average runtime (ms)</text>
+<rect x="725.00" y="56.00" width="16.00" height="16.00" fill="#1f77b4" stroke="none" stroke-width="1" />
+<text x="749.00" y="69.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">RelWithDebInfo</text>
+<rect x="725.00" y="80.00" width="16.00" height="16.00" fill="#d62728" stroke="none" stroke-width="1" />
+<text x="749.00" y="93.00" font-family="Times New Roman, DejaVu Serif, serif" font-size="16" text-anchor="start" font-weight="normal" fill="#111">Release</text>
+</svg>
