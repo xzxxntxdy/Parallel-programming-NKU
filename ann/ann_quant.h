@@ -708,46 +708,52 @@ inline void fastscan_block_scan(const PQFastScanIndex& fast,
     const size_t blocks = (fast.n + static_cast<size_t>(block_size) - 1) /
                           static_cast<size_t>(block_size);
 
+    const size_t block_stride = static_cast<size_t>(block_size) * static_cast<size_t>(m);
+    const uint8_t* __restrict qlut_p = qlut.data();
+    const int ks_local = ks;
+    const int m_local = m;
+    const size_t m_sz = static_cast<size_t>(m_local);
+
     for (size_t b = 0; b < blocks; ++b) {
         size_t block_base = b * static_cast<size_t>(block_size);
         size_t valid = std::min(static_cast<size_t>(block_size), fast.n - block_base);
-        const uint8_t* block_codes = &fast.codes[
-            b * static_cast<size_t>(block_size) * static_cast<size_t>(m)];
+        const uint8_t* block_codes = &fast.codes[b * block_stride];
 
-        // 4-way unrolled: 4 independent lanes per iteration → OoO-friendly
-        size_t lane = 0;
-        for (; lane + 4 <= valid; lane += 4) {
-            const uint8_t* c0 = block_codes + lane * static_cast<size_t>(m);
-            const uint8_t* c1 = block_codes + (lane + 1) * static_cast<size_t>(m);
-            const uint8_t* c2 = block_codes + (lane + 2) * static_cast<size_t>(m);
-            const uint8_t* c3 = block_codes + (lane + 3) * static_cast<size_t>(m);
-
-            int s0 = 0, s1 = 0, s2 = 0, s3 = 0;
-            for (int part = 0; part < m; ++part) {
-                s0 += static_cast<int>(qlut[static_cast<size_t>(part) * ks + c0[part]]);
-                s1 += static_cast<int>(qlut[static_cast<size_t>(part) * ks + c1[part]]);
-                s2 += static_cast<int>(qlut[static_cast<size_t>(part) * ks + c2[part]]);
-                s3 += static_cast<int>(qlut[static_cast<size_t>(part) * ks + c3[part]]);
-            }
-
-            coarse[block_base + lane] =
-                std::make_pair(-static_cast<float>(s0), static_cast<uint32_t>(block_base + lane));
-            coarse[block_base + lane + 1] =
-                std::make_pair(-static_cast<float>(s1), static_cast<uint32_t>(block_base + lane + 1));
-            coarse[block_base + lane + 2] =
-                std::make_pair(-static_cast<float>(s2), static_cast<uint32_t>(block_base + lane + 2));
-            coarse[block_base + lane + 3] =
-                std::make_pair(-static_cast<float>(s3), static_cast<uint32_t>(block_base + lane + 3));
+        // ARM: prefetch next block's codes (in-order → cache miss is expensive)
+        if (b + 1 < blocks) {
+            ANN_PREFETCH(&fast.codes[(b + 1) * block_stride]);
         }
 
+        size_t lane = 0;
+        for (; lane + 4 <= valid; lane += 4) {
+            const uint8_t* c0 = block_codes + lane * m_sz;
+            const uint8_t* c1 = c0 + m_sz;
+            const uint8_t* c2 = c1 + m_sz;
+            const uint8_t* c3 = c2 + m_sz;
+            int s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+            for (int part = 0; part < m_local; ++part) {
+                const uint8_t* lut_p = qlut_p + static_cast<size_t>(part) * ks_local;
+                // ARM: prefetch next part's LUT slice (256 bytes ahead)
+                if (part + 1 < m_local) {
+                    ANN_PREFETCH(qlut_p + static_cast<size_t>(part + 1) * ks_local);
+                }
+                s0 += static_cast<int>(lut_p[c0[part]]);
+                s1 += static_cast<int>(lut_p[c1[part]]);
+                s2 += static_cast<int>(lut_p[c2[part]]);
+                s3 += static_cast<int>(lut_p[c3[part]]);
+            }
+            coarse[block_base + lane+0] = std::make_pair(-static_cast<float>(s0), static_cast<uint32_t>(block_base + lane+0));
+            coarse[block_base + lane+1] = std::make_pair(-static_cast<float>(s1), static_cast<uint32_t>(block_base + lane+1));
+            coarse[block_base + lane+2] = std::make_pair(-static_cast<float>(s2), static_cast<uint32_t>(block_base + lane+2));
+            coarse[block_base + lane+3] = std::make_pair(-static_cast<float>(s3), static_cast<uint32_t>(block_base + lane+3));
+        }
         // Tail: 1-3 remaining lanes
         for (; lane < valid; ++lane) {
             const uint8_t* code = block_codes + lane * static_cast<size_t>(m);
             int score = 0;
             for (int part = 0; part < m; ++part)
                 score += static_cast<int>(qlut[static_cast<size_t>(part) * ks + code[part]]);
-            coarse[block_base + lane] =
-                std::make_pair(-static_cast<float>(score), static_cast<uint32_t>(block_base + lane));
+            coarse[block_base + lane] = std::make_pair(-static_cast<float>(score), static_cast<uint32_t>(block_base + lane));
         }
     }
 }
