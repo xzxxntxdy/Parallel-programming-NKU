@@ -1541,29 +1541,17 @@ int main(int argc, char *argv[])
     std::vector<SearchResult> results;
     results.resize(test_number);
 
-    const int final_pq_m = 16;
-    const int final_pq_p = 1500;
-    const int final_pq_ks = 256;
-    const int final_fs_block = 64;
-    ann::PQIndex final_pq_index;
+    const int final_m2 = 32;       // M=32 sub-quantizers
+    const int final_pq_p = 500;   // rerank candidates (Ks=16 needs fewer)
+    const int final_ks = 16;      // 4-bit codes → pshufb/vtbl compatible
+    ann::PQ4Index final_idx;
     int64_t final_build_t0 = now_us();
-    ann::build_pq_index(base, base_number, vecdim, final_pq_m, final_pq_ks,
-                        2048, 10, final_pq_index);
-    ann::PQFastScanIndex final_fast_index;
-    ann::build_pq_fastscan_index(final_pq_index, final_fs_block, final_fast_index);
+    ann::build_pq4_index(base, base_number, vecdim, final_m2, 2048, 10, final_idx);
     double final_build_sec = (now_us() - final_build_t0) / 1000000.0;
-    std::cerr << "final ANN path: FastScan-ADC-M" << final_pq_m
+    std::cerr << "final ANN path: FastScan-v3-PQ4-M" << final_m2
+              << "-Ks" << final_ks
               << "-p" << final_pq_p
-              << "-b" << final_fs_block
               << " build_time_sec=" << final_build_sec << "\n";
-
-    // Current final path builds the PQ index once before the timed query loop.
-    // Build time is reported on stderr and is not included in per-query latency.
-    // 如果你需要保存索引，可以在这里添加你需要的函数，你可以将下面的注释删除来查看pbs是否将build.index返回到你的files目录中
-    // 要保存的目录必须是files/*
-    // 每个人的目录空间有限，不需要的索引请及时删除，避免占空间太大
-    // 下面是一个构建hnsw索引的示例
-    // build_index(base, base_number, vecdim);
 
     // 查询测试代码
     for(int i = 0; i < test_number; ++i) {
@@ -1571,12 +1559,9 @@ int main(int argc, char *argv[])
         struct timeval val;
         int ret = gettimeofday(&val, NULL);
 
-        // 该文件已有代码中你只能修改该函数的调用方式
-        // 可以任意修改函数名，函数参数或者改为调用成员函数，但是不能修改函数返回值。
         ann::QuantTiming timing;
-        auto res = ann::pq_adc_fastscan_search_rerank_timed(final_pq_index, final_fast_index,
-                                                           base, test_query + i*vecdim,
-                                                           final_pq_p, k, &timing, NULL);
+        auto res = ann::pq4_scan_search(final_idx, base, test_query + i*vecdim,
+                                         final_pq_p, k, &timing, NULL);
 
         struct timeval newVal;
         ret = gettimeofday(&newVal, NULL);

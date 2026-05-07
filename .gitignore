@@ -1,12 +1,14 @@
 # Local instructions / private notes
 AGENTS.md
 anndata/
+faiss/
 
 # Build outputs
 build/
 
 # Raw profiling results
 vtune/
+*.obj
 
 # Python cache
 __pycache__/

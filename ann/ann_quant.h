@@ -929,4 +929,204 @@ inline bool save_pq_index(const PQIndex& index, const std::string& path) {
     return true;
 }
 
+// ============================================================
+// PQ4 FastScan v3: 4-bit PQ + pshufb SIMD (Faiss-style)
+// ============================================================
+// M2 sub-quantizers × Ks=16. Each 16-entry LUT fits in one pshufb.
+// Process 16 vectors/SIMD call — 16x fewer iterations vs scalar.
+struct PQ4Index {
+    size_t n, d;
+    int m2, ks, subdim;
+    std::vector<float> codebooks;
+    std::vector<uint8_t> codes;       // original: n × m2
+    std::vector<uint8_t> packed;      // SQ-major: [part][16-vec-group], contiguous
+
+    PQ4Index() : n(0), d(0), m2(0), ks(16), subdim(0) {}
+};
+
+inline void build_pq4_index(const float* base, size_t n, size_t d, int m2,
+                            int train_n, int iters, PQ4Index& idx) {
+    idx.n = n; idx.d = d; idx.m2 = m2; idx.ks = 16;
+    idx.subdim = static_cast<int>(d) / m2;
+    int sd = idx.subdim;
+    idx.codebooks.resize(static_cast<size_t>(m2) * 16 * sd);
+    idx.codes.assign(n * static_cast<size_t>(m2), 0);
+
+    int tn = std::min(train_n, static_cast<int>(n));
+    std::vector<float> tdata(tn * d);
+    {
+        std::mt19937 rng(42);
+        std::vector<int> ind(n);
+        for (int i = 0; i < static_cast<int>(n); i++) ind[i] = i;
+        std::shuffle(ind.begin(), ind.end(), rng);
+        for (int i = 0; i < tn; i++)
+            memcpy(&tdata[i * d], base + ind[i] * d, d * sizeof(float));
+    }
+
+    for (int p = 0; p < m2; p++) {
+        std::vector<float> sub(tn * sd);
+        for (int i = 0; i < tn; i++)
+            memcpy(&sub[i * sd], &tdata[i * d + p * sd], sd * sizeof(float));
+
+        std::vector<float> ctr(16 * sd, 0);
+        for (int c = 0; c < 16; c++) {
+            int si = c * tn / 16;
+            memcpy(&ctr[c * sd], &sub[si * sd], sd * sizeof(float));
+        }
+        std::vector<int> cnt(16);
+        std::vector<double> acc(16 * sd);
+        for (int iter = 0; iter < iters; iter++) {
+            std::fill(cnt.begin(), cnt.end(), 0);
+            std::fill(acc.begin(), acc.end(), 0.0);
+            for (int i = 0; i < tn; i++) {
+                const float* x = &sub[i * sd];
+                int best = 0; float bd = 1e30f;
+                for (int c = 0; c < 16; c++) {
+                    const float* ct = &ctr[c * sd];
+                    float d2 = 0;
+                    for (int j = 0; j < sd; j++) { float df = x[j]-ct[j]; d2 += df*df; }
+                    if (d2 < bd) { bd = d2; best = c; }
+                }
+                cnt[best]++; double* s = &acc[best * sd];
+                for (int j = 0; j < sd; j++) s[j] += x[j];
+            }
+            for (int c = 0; c < 16; c++) {
+                if (!cnt[c]) continue;
+                float inv = 1.0f / cnt[c];
+                for (int j = 0; j < sd; j++) ctr[c * sd + j] = static_cast<float>(acc[c * sd + j] * inv);
+            }
+        }
+        memcpy(&idx.codebooks[p * 16 * sd], ctr.data(), 16 * sd * sizeof(float));
+    }
+    // Encode
+    for (size_t i = 0; i < n; i++) {
+        uint8_t* cd = &idx.codes[i * m2];
+        for (int p = 0; p < m2; p++) {
+            const float* x = base + i * d + p * sd;
+            const float* ctr = &idx.codebooks[p * 16 * sd];
+            int best = 0; float bd = 1e30f;
+            for (int c = 0; c < 16; c++) {
+                const float* ct = ctr + c * sd;
+                float d2 = 0;
+                for (int j = 0; j < sd; j++) { float df = x[j]-ct[j]; d2 += df*df; }
+                if (d2 < bd) { bd = d2; best = c; }
+            }
+            cd[p] = static_cast<uint8_t>(best);
+        }
+    }
+
+    // Pack codes SQ-major: [part][16-vec-group], each group = 16 contiguous bytes
+    size_t n_groups = (n + 15) / 16;
+    idx.packed.assign(n_groups * static_cast<size_t>(m2) * 16, 0);
+    for (int p = 0; p < m2; p++) {
+        for (size_t g = 0; g < n_groups; g++) {
+            uint8_t* dst = &idx.packed[(g * m2 + p) * 16];
+            for (size_t j = 0; j < 16; j++) {
+                size_t id = g * 16 + j;
+                dst[j] = (id < n) ? idx.codes[id * m2 + p] : 0;
+            }
+        }
+    }
+}
+
+// PQ4 query: SSE pshufb with SQ-major codes (zero gather overhead)
+inline std::priority_queue<std::pair<float, uint32_t>>
+pq4_scan_search(const PQ4Index& idx, const float* base, const float* query,
+                size_t p, size_t k, QuantTiming* t, float* mae_out) {
+    p = std::min(p, idx.n);
+    long long t0 = quant_now_us();
+
+    // Build + quantize LUT
+    int m2 = idx.m2, sd = idx.subdim;
+    std::vector<float> flut(m2 * 16);
+    float lmin = 1e30f, lmax = -1e30f;
+    for (int part = 0; part < m2; part++) {
+        const float* qs = query + part * sd;
+        const float* ct = &idx.codebooks[part * 16 * sd];
+        for (int c = 0; c < 16; c++) {
+            float dot = 0;
+            for (int j = 0; j < sd; j++) dot += ct[c * sd + j] * qs[j];
+            flut[part * 16 + c] = dot;
+            if (dot < lmin) lmin = dot;
+            if (dot > lmax) lmax = dot;
+        }
+    }
+    float scale = (lmax - lmin) > 1e-12f ? (lmax - lmin) / 255.f : 1.f;
+    std::vector<uint8_t> qlut(m2 * 16);
+    double err = 0;
+    for (size_t i = 0; i < flut.size(); i++) {
+        int qv = static_cast<int>((flut[i] - lmin) / scale + 0.5f);
+        qlut[i] = clamp_u8(qv);
+        err += std::fabs(flut[i] - (lmin + scale * qlut[i]));
+    }
+    if (mae_out) *mae_out = static_cast<float>(err / flut.size());
+    long long t1 = quant_now_us();
+
+    // Scan: 16 vectors/iter with SSE pshufb, SQ-major codes (1 load per SQ)
+    long long t2 = quant_now_us();
+    std::vector<std::pair<float, uint32_t>> coarse(idx.n);
+    size_t n_groups = (idx.n + 15) / 16;
+
+#if ANN_HAS_SSE
+    const __m128i zero = _mm_setzero_si128();
+    for (size_t g = 0; g < n_groups; g++) {
+        size_t base = g * 16;
+        size_t nv = std::min(static_cast<size_t>(16), idx.n - base);
+        __m128i s0 = zero, s1 = zero, s2 = zero, s3 = zero;
+
+        // SQ-major: codes for 16 vectors × 1 SQ are 16 contiguous bytes → 1 load!
+        for (int part = 0; part < m2; part++) {
+            __m128i lut  = _mm_loadu_si128((const __m128i*)&qlut[part * 16]);
+            __m128i cvec = _mm_loadu_si128((const __m128i*)&idx.packed[(g * m2 + part) * 16]);
+            __m128i vals = _mm_shuffle_epi8(lut, cvec);  // 16 lookups, 1 instruction
+
+            __m128i vl = _mm_unpacklo_epi8(vals, zero);
+            __m128i vh = _mm_unpackhi_epi8(vals, zero);
+            s0 = _mm_add_epi32(s0, _mm_unpacklo_epi16(vl, zero));
+            s1 = _mm_add_epi32(s1, _mm_unpackhi_epi16(vl, zero));
+            s2 = _mm_add_epi32(s2, _mm_unpacklo_epi16(vh, zero));
+            s3 = _mm_add_epi32(s3, _mm_unpackhi_epi16(vh, zero));
+        }
+
+        alignas(16) int32_t sc[16];
+        _mm_store_si128((__m128i*)(sc+0),  s0);
+        _mm_store_si128((__m128i*)(sc+4),  s1);
+        _mm_store_si128((__m128i*)(sc+8),  s2);
+        _mm_store_si128((__m128i*)(sc+12), s3);
+        for (size_t j = 0; j < nv; j++)
+            coarse[base + j] = std::make_pair(-static_cast<float>(sc[j]),
+                                                static_cast<uint32_t>(base + j));
+    }
+#else
+    for (size_t id = 0; id < idx.n; id++) {
+        int score = 0;
+        for (int part = 0; part < m2; part++)
+            score += static_cast<int>(qlut[part * 16 + idx.codes[id * m2 + part]]);
+        coarse[id] = std::make_pair(-static_cast<float>(score), static_cast<uint32_t>(id));
+    }
+#endif
+    long long t3 = quant_now_us();
+
+    // Select
+    if (p < coarse.size())
+        std::nth_element(coarse.begin(), coarse.begin() + p, coarse.end());
+    long long t4 = quant_now_us();
+
+    // Rerank
+    long long t5 = quant_now_us();
+    std::priority_queue<std::pair<float, uint32_t>> result;
+    for (size_t i = 0; i < p; i++) {
+        uint32_t id = coarse[i].second;
+        float dist = 1.f - inner_product_avx(base + id * idx.d, query, idx.d);
+        push_heap_topk(result, dist, id, k);
+    }
+    long long t6 = quant_now_us();
+
+    if (t) {
+        t->lut_us = t1 - t0; t->scan_us = t3 - t2;
+        t->select_us = t4 - t3; t->rerank_us = t6 - t5;
+    }
+    return result;
+}
+
 }  // namespace ann
