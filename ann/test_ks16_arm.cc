@@ -54,22 +54,34 @@ int main() {
     long long t1=now_us();
     printf("v2 Ks=256 M=16      latency=%.1f us  recall=%.4f  code=16B\n", (double)(t1-t0)/nq, rec/nq);
 
-    // Sweep Ks=16 with different M: 24, 32, 40, 48
-    int M_vals[] = {24, 32, 40, 48};
+    // Sweep Ks=16: try smaller M, and M=24 with higher p
+    int M_vals[] = {12, 16, 24, 32};
     for(int mi=0; mi<4; mi++){
         int M2=M_vals[mi];
         PQ4Index idx; build_pq4_index(base,N,bd,M2,2048,10,idx);
+        // Try p that gives best recall for each M
+        int p_test = (M2 <= 16) ? 2000 : 500;
         t0=now_us(); rec=0;
-        for(size_t qi=0;qi<nq;qi++){QuantTiming t;float m;auto r=pq4_scan_search(idx,base,q+qi*bd,500,k,&t,&m);rec+=calc_recall(r,gt,gd,qi,k);}
+        for(size_t qi=0;qi<nq;qi++){QuantTiming t;float m;auto r=pq4_scan_search(idx,base,q+qi*bd,p_test,k,&t,&m);rec+=calc_recall(r,gt,gd,qi,k);}
         t1=now_us();
-        int code_bytes = M2/2; // 2 SQs per byte (4-bit each)
-        printf("v3 Ks=16 M=%-2d        latency=%.1f us  recall=%.4f  code=%dB\n", M2, (double)(t1-t0)/nq, rec/nq, code_bytes);
+        int code_bytes = (M2 + 1) / 2;
+        printf("v3 Ks=16 M=%-2d p=%-5d latency=%.1f us  recall=%.4f  code=%dB\n", M2, p_test, (double)(t1-t0)/nq, rec/nq, code_bytes);
     }
 
-    // Also: v3 with rerank p=1000, 2000
-    printf("\n=== v3 M=32 recall vs p ===\n");
+    // M=24 p-sweep to find recall recovery point
+    printf("\n=== M=24 p-sweep ===\n");
+    PQ4Index idx24; build_pq4_index(base,N,bd,24,2048,10,idx24);
+    for(int p_val: {1000,2000,5000}){
+        t0=now_us(); rec=0;
+        for(size_t qi=0;qi<nq;qi++){QuantTiming t;float m;auto r=pq4_scan_search(idx24,base,q+qi*bd,p_val,k,&t,&m);rec+=calc_recall(r,gt,gd,qi,k);}
+        t1=now_us();
+        printf("M=24 p=%-5d  latency=%.1f us  recall=%.4f\n", p_val, (double)(t1-t0)/nq, rec/nq);
+    }
+
+    // M=32 with lower p
+    printf("\n=== M=32 low-p ===\n");
     PQ4Index idx32; build_pq4_index(base,N,bd,32,2048,10,idx32);
-    for(int p_val: {500,1000,2000,5000}){
+    for(int p_val: {100, 250, 500}){
         t0=now_us(); rec=0;
         for(size_t qi=0;qi<nq;qi++){QuantTiming t;float m;auto r=pq4_scan_search(idx32,base,q+qi*bd,p_val,k,&t,&m);rec+=calc_recall(r,gt,gd,qi,k);}
         t1=now_us();
