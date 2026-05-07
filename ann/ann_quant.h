@@ -1094,6 +1094,33 @@ pq4_scan_search(const PQ4Index& idx, const float* base, const float* query,
             coarse[base + j] = std::make_pair(-static_cast<float>(sc[j]),
                                                 static_cast<uint32_t>(base + j));
     }
+#elif ANN_HAS_NEON
+    // NEON vtbl: process 16 vectors per SQ, vtbl does 16-entry LUT lookup
+    const uint8x16_t z_u8 = vdupq_n_u8(0);
+    const uint16x8_t z_u16 = vdupq_n_u16(0);
+    const uint32x4_t z_u32 = vdupq_n_u32(0);
+    for (size_t g = 0; g < n_groups; g++) {
+        size_t base = g * 16;
+        size_t nv = std::min((size_t)16, idx.n - base);
+        uint32x4_t s0=z_u32, s1=z_u32, s2=z_u32, s3=z_u32;
+        for (int part = 0; part < m2; part++) {
+            uint8x16_t lut  = vld1q_u8(&qlut[part * 16]);
+            uint8x16_t cvec = vld1q_u8(&idx.packed[(g * m2 + part) * 16]);
+            uint8x16_t vals = vqtbl1q_u8(lut, cvec);
+            uint16x8_t vl = vmovl_u8(vget_low_u8(vals));
+            uint16x8_t vh = vmovl_u8(vget_high_u8(vals));
+            s0 = vaddw_u16(s0, vget_low_u16(vl));
+            s1 = vaddw_u16(s1, vget_high_u16(vl));
+            s2 = vaddw_u16(s2, vget_low_u16(vh));
+            s3 = vaddw_u16(s3, vget_high_u16(vh));
+        }
+        uint32_t sc[16];
+        vst1q_u32(sc+0,s0); vst1q_u32(sc+4,s1);
+        vst1q_u32(sc+8,s2); vst1q_u32(sc+12,s3);
+        for (size_t j = 0; j < nv; j++)
+            coarse[base+j] = std::make_pair(-(float)(int32_t)sc[j], (uint32_t)(base+j));
+    }
+
 #else
     for (size_t id = 0; id < idx.n; id++) {
         int score = 0;
