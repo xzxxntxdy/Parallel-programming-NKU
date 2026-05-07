@@ -714,15 +714,15 @@ inline void fastscan_block_scan(const PQFastScanIndex& fast,
     const int m_local = m;
     const size_t m_sz = static_cast<size_t>(m_local);
 
+    // Precompute per-part LUT base pointers (eliminates part*ks multiply in inner loop)
+    const uint8_t* lut_ptrs[32];
+    for (int pi = 0; pi < m_local; ++pi)
+        lut_ptrs[pi] = qlut_p + static_cast<size_t>(pi) * ks_local;
+
     for (size_t b = 0; b < blocks; ++b) {
         size_t block_base = b * static_cast<size_t>(block_size);
         size_t valid = std::min(static_cast<size_t>(block_size), fast.n - block_base);
         const uint8_t* block_codes = &fast.codes[b * block_stride];
-
-        // ARM: prefetch next block's codes (in-order → cache miss is expensive)
-        if (b + 1 < blocks) {
-            ANN_PREFETCH(&fast.codes[(b + 1) * block_stride]);
-        }
 
         size_t lane = 0;
         for (; lane + 4 <= valid; lane += 4) {
@@ -732,11 +732,7 @@ inline void fastscan_block_scan(const PQFastScanIndex& fast,
             const uint8_t* c3 = c2 + m_sz;
             int s0 = 0, s1 = 0, s2 = 0, s3 = 0;
             for (int part = 0; part < m_local; ++part) {
-                const uint8_t* lut_p = qlut_p + static_cast<size_t>(part) * ks_local;
-                // ARM: prefetch next part's LUT slice (256 bytes ahead)
-                if (part + 1 < m_local) {
-                    ANN_PREFETCH(qlut_p + static_cast<size_t>(part + 1) * ks_local);
-                }
+                const uint8_t* lut_p = lut_ptrs[part];
                 s0 += static_cast<int>(lut_p[c0[part]]);
                 s1 += static_cast<int>(lut_p[c1[part]]);
                 s2 += static_cast<int>(lut_p[c2[part]]);
@@ -776,9 +772,7 @@ pq_adc_fastscan_search_rerank_timed(const PQIndex& index,
         for (int c = 0; c < index.ks; ++c) {
             float dot = 0.0f;
             const float* center = centers + static_cast<size_t>(c) * index.subdim;
-            for (int j = 0; j < index.subdim; ++j) {
-                dot += center[j] * q[j];
-            }
+            for (int j = 0; j < index.subdim; ++j) dot += center[j] * q[j];
             lut[static_cast<size_t>(part) * index.ks + c] = dot;
         }
     }
@@ -792,10 +786,8 @@ pq_adc_fastscan_search_rerank_timed(const PQIndex& index,
     long long scan_t1 = quant_now_us();
 
     long long select_t0 = quant_now_us();
-    if (p < coarse.size()) {
-        std::nth_element(coarse.begin(), coarse.begin() + static_cast<std::ptrdiff_t>(p),
-                         coarse.end());
-    }
+    if (p < coarse.size())
+        std::nth_element(coarse.begin(), coarse.begin() + static_cast<std::ptrdiff_t>(p), coarse.end());
     long long select_t1 = quant_now_us();
 
     long long rerank_t0 = quant_now_us();
@@ -807,8 +799,7 @@ pq_adc_fastscan_search_rerank_timed(const PQIndex& index,
         timing->lut_us = lut_t1 - lut_t0;
         timing->scan_us = scan_t1 - scan_t0;
         timing->select_us = select_t1 - select_t0;
-        timing->coarse_us = (lut_t1 - lut_t0) + (scan_t1 - scan_t0) +
-                            (select_t1 - select_t0);
+        timing->coarse_us = (lut_t1 - lut_t0) + (scan_t1 - scan_t0) + (select_t1 - select_t0);
         timing->rerank_us = rerank_t1 - rerank_t0;
     }
     return result;
