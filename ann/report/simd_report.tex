@@ -1,0 +1,617 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\geometry{margin=2.2cm}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize, breaklines=true, frame=single,
+  language=C++, showstringspaces=false,
+}
+
+\title{\textbf{基于SIMD的近似最近邻搜索距离计算优化} \\
+\large --- ARM NEON与x86 AVX2双平台对比研究}
+\author{并行程序设计实验 --- ANN/ANNS SIMD阶段}
+\date{2026年5月}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+近似最近邻搜索(ANNS)是大规模向量检索的核心问题，查询阶段的距离计算通常构成性能瓶颈。
+本文针对DEEP100K数据集（$d=96$, $N=100000$），系统实现并对比了Flat-SIMD、标量量化(SQ-SIMD)、
+乘积量化(PQ)及对称/非对称距离计算(SDC/ADC)、SDC流水线并行、FastScan等多种SIMD加速方案。
+实验在ARM Kunpeng-920（NEON, 128-bit）和Intel Core i9-14900HX（AVX2/FMA, 256-bit）
+两个平台上完成，覆盖了所有强制实验矩阵。
+在x86平台上，优化后的FastScan-ADC-M16-p500-b128方案以1.057~ms/query（recall@10=1.0）
+获得最优latency-recall权衡，相对Flat-Scalar加速3.36$\times$，相对naive PQ-ADC加速1.11$\times$。
+ARM平台上，FastScan-ADC-M16-p1500-b64以3.12~ms/query（recall@10=0.99995）为最优。
+通过perf计数器、MSVC汇编分析和跨平台ISA对比，揭示了SIMD加速在不同硬件上的性能特征与瓶颈。
+\end{abstract}
+
+%=====================================================================
+\section{问题定义与评价指标}
+%=====================================================================
+
+\subsection{kNN与ANNS问题定义}
+
+给定数据集$X = \{x_1, x_2, \ldots, x_N\} \subset \mathbb{R}^d$和查询向量$q \in \mathbb{R}^d$，
+精确$k$最近邻(kNN)搜索的目标是找到距离$q$最近的$k$个向量。ANNS以高准确率为代价换取更低的查询延迟。
+本项目采用框架一致的内积距离：
+\begin{equation}
+\delta(q, x) = 1 - \sum_{i=1}^{d} q_i x_i
+\end{equation}
+
+\subsection{recall@k}
+
+\begin{equation}
+\text{recall@k} = \frac{|\text{KNN}(q) \cap \text{KANN}(q)|}{k}
+\end{equation}
+其中$\text{KNN}(q)$为精确搜索结果，$\text{KANN}(q)$为近似搜索结果，$k=10$。
+
+\subsection{latency指标}
+
+记录单query延迟、粗排延迟(coarse)、精排延迟(rerank)，对PQ进一步拆分为：
+query编码、LUT构建、scan查表累加、top-k/top-p选择、rerank五个阶段。
+
+%=====================================================================
+\section{SIMD算法设计}
+%=====================================================================
+
+\subsection{Flat-SIMD}
+
+Flat Search遍历全部$N=100000$个base向量，对每个向量计算内积距离后维护top-k堆，
+每次查询需读取$100000 \times 96 \times 4 = 38.4$~MB数据，执行$9.6 \times 10^6$次乘加操作。
+
+\subsubsection{SIMD chunk分析}
+
+对$d=96$维度，不同SIMD ISA的chunk划分如表~\ref{tab:simd_chunk}。
+
+\begin{table}[H]
+\centering
+\caption{SIMD ISA与$d=96$维度划分}
+\label{tab:simd_chunk}
+\begin{tabular}{lccc}
+\toprule
+\textbf{ISA} & \textbf{寄存器位宽} & \textbf{float32 lanes} & \textbf{chunk数/向量} \\
+\midrule
+SSE / NEON (ARM) & 128-bit & 4  & 24 \\
+AVX / AVX2 (x86) & 256-bit & 8  & 12 \\
+AVX-512          & 512-bit & 16 & 6  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+理论lane数不等于最终加速比：Flat Search受限于每查询38.4~MB的访存带宽、
+水平求和延迟、top-k堆维护和分支预测等因素，属于典型的内存密集型工作负载。
+
+\subsubsection{手写SIMD实现}
+
+x86 SSE版本使用4个\texttt{\_\_m128}累加器同时处理16个float/chunk：
+\begin{lstlisting}
+for (; d + 16 <= dim; d += 16) {
+    sum0 = _mm_add_ps(sum0, _mm_mul_ps(_mm_loadu_ps(a+d),    _mm_loadu_ps(b+d)));
+    sum1 = _mm_add_ps(sum1, _mm_mul_ps(_mm_loadu_ps(a+d+4),  _mm_loadu_ps(b+d+4)));
+    sum2 = _mm_add_ps(sum2, _mm_mul_ps(_mm_loadu_ps(a+d+8),  _mm_loadu_ps(b+d+8)));
+    sum3 = _mm_add_ps(sum3, _mm_mul_ps(_mm_loadu_ps(a+d+12), _mm_loadu_ps(b+d+12)));
+}
+\end{lstlisting}
+
+x86 AVX2版本使用4个\texttt{\_\_m256}累加器，每次处理32个float。
+ARM NEON版本使用\texttt{vmlaq\_f32}融合乘加指令，同样支持4路累加器展开。
+
+\subsubsection{自动向量化 vs 手写SIMD}
+
+编译器\texttt{-O2}自动向量化通过引入多累加器展开来利用ILP，但受限于别名分析
+和保守的优化策略。手写SIMD可以精确控制寄存器分配、指令调度和FMA使用。
+
+\subsection{SQ-SIMD}
+
+SQ将float32逐维量化为uint8：
+\begin{equation}
+\text{code}[i][j] = \text{clamp}\left(\left\lfloor \frac{x_i[j] - \min_j}{\text{scale}_j} + 0.5 \right\rfloor, 0, 255\right)
+\end{equation}
+
+索引压缩：$100000 \times 96 \times 4 = 38.4$~MB $\to$ $100000 \times 96 \times 1 = 9.6$~MB（4$\times$压缩）。
+128-bit SIMD一次处理16个uint8而非4个float32。
+查询时构建$d\times 256$ float LUT，扫描时查表累加，对top-p候选float精排。
+
+\subsection{PQ-SDC与PQ-ADC}
+
+Product Quantization将$d=96$切分为$M$个子空间（subdim=$d/M$），
+每个子空间KMeans聚类（$\text{Ks}=256$），base编码为$M$个uint8。
+
+\textbf{SDC}：query也PQ编码，预计算$M$个$256\times 256$中心间距离表，查询时查表累加。
+\textbf{ADC}：query不编码，每query在线构建$M\times 256$ LUT，查询时查LUT累加。
+
+ADC仅量化base端，理论上recall优于SDC。数值分析见表~\ref{tab:pq_numerical}。
+
+\begin{table}[H]
+\centering
+\caption{PQ数值分析（Ks=256, N=100000）}
+\label{tab:pq_numerical}
+\begin{tabular}{lcccc}
+\toprule
+$M$ & subdim & base code size & ADC LUT size & SDC table size \\
+\midrule
+8  & 12 & 0.8~MB  & 8~KB  & 2.0~MB \\
+12 & 8  & 1.2~MB  & 12~KB & 3.0~MB \\
+16 & 6  & 1.6~MB  & 16~KB & 4.0~MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{SDC流水线并行}
+
+批量查询时利用生产者-消费者模型：
+\begin{itemize}[nosep]
+    \item Stage 1: Query PQ编码
+    \item Stage 2: SDC查表扫措 + Top-p选择
+    \item Stage 3: Float精排
+\end{itemize}
+实现了2-stage和3-stage流水线，使用有界阻塞队列(\texttt{BlockingQueue})。
+
+\subsection{FastScan}
+
+FastScan优化PQ scan阶段的查表累加效率：
+\begin{enumerate}[nosep]
+    \item \textbf{LUT量化}：float LUT全局量化为uint8，降低寄存器/cache压力
+    \item \textbf{Block-major code layout}：PQ code按block重新排列，提升cache局部性
+    \item \textbf{整数累加}：block内扫描使用uint8查表和整数累加
+\end{enumerate}
+
+LUT量化公式：$\text{qlut}[i] = \text{clamp}(\lfloor (\text{lut}[i] - \min)/\text{scale} + 0.5 \rfloor, 0, 255)$，
+量化误差通过float rerank阶段校正。
+
+%=====================================================================
+\section{实现细节}
+%=====================================================================
+
+项目采用header-only设计：
+\begin{itemize}[nosep]
+    \item \texttt{ann\_search.h}: SIMD距离计算kernel（标量/NEON/SSE/AVX）、top-k维护、prefetch
+    \item \texttt{ann\_quant.h}: SQ8/PQ索引构建、KMeans训练、SDC/ADC/FastScan查询
+    \item \texttt{main.cc}: ARM集群test.sh集成
+    \item \texttt{x86\_main.cc}: x86独立benchmark（使用真实DEEP100K数据）
+    \item \texttt{plot\_x86\_paper.py}: 双平台论文图表生成
+\end{itemize}
+
+跨平台兼容性：\texttt{ann\_search.h}通过条件编译支持ARM NEON（\texttt{\_\_aarch64\_\_}）、
+x86 AVX2（\texttt{\_\_AVX2\_\_}）、x86 SSE（\texttt{\_M\_SC\_VER}或\texttt{\_\_SSE\_\_}）。
+MSVC上\texttt{\_\_builtin\_prefetch}替换为\texttt{\_mm\_prefetch}。
+
+%=====================================================================
+\section{实验环境与设置}
+%=====================================================================
+
+\subsection{硬件平台}
+
+\begin{table}[H]
+\centering
+\caption{双平台对比}
+\label{tab:platforms}
+\begin{tabular}{lcc}
+\toprule
+\textbf{项目} & \textbf{ARM平台} & \textbf{x86平台} \\
+\midrule
+CPU & Kunpeng-920 & Intel Core i9-14900HX \\
+ISA & ARMv8.2-A + NEON & x86-64 + SSE/AVX2/FMA \\
+SIMD位宽 & 128-bit & 256-bit \\
+核心/线程 & 8C/8T & 24C/32T (8P+16E) \\
+L1D cache & 64KB/core & 48KB(P-core) \\
+L2 cache & 512KB/core & 2MB(P-core) \\
+L3 cache & 32MB shared & 36MB shared \\
+编译器 & GCC 11.4 \texttt{-O2} & MSVC 19.43 \texttt{/O2 /arch:AVX2} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{数据集与参数}
+
+\begin{itemize}[nosep]
+    \item 数据集：DEEP100K (图片向量), $N=100000$, $d=96$, 内积距离
+    \item 查询集：前2000条正式评估; x86 benchmark使用前100条
+    \item $k=10$
+    \item ARM: \texttt{bash test.sh 1 1} \quad x86: \texttt{x86\_main.exe}
+    \item \texttt{test\_gt}仅用于recall评估，不作为答案输出
+\end{itemize}
+
+%=====================================================================
+\section{实验结果与分析}
+%=====================================================================
+
+\subsection{Flat-SIMD性能对比}
+
+\begin{table}[H]
+\centering
+\caption{Flat-SIMD双平台性能对比}
+\label{tab:flat}
+\begin{tabular}{lccc|c}
+\toprule
+\textbf{方法} & \multicolumn{2}{c}{\textbf{ARM (NEON)}} & \textbf{x86 (AVX2)} & \\
+& Latency(ms) & Speedup & Latency(ms) & Speedup \\
+\midrule
+Flat-Scalar        & 19.08 & 1.00$\times$ & 3.56 & 1.00$\times$ \\
+Flat-AutoVec       & 11.88 & 1.61$\times$ & 3.21 & 1.11$\times$ \\
+Flat-Manual-SIMD   & 8.43  & 2.26$\times$ & 1.49 & 2.39$\times$ \\
+Flat-Manual+Unroll & 10.21 & 1.87$\times$ & 1.65 & 2.15$\times$ \\
+Flat-Manual+Prefetch & 9.28 & 2.06$\times$ & 1.31 & 2.72$\times$ \\
+Flat-Manual+FixedTK & 9.21 & 2.07$\times$ & 1.31 & 2.72$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{分析}：
+(1) 手写SIMD在ARM上获得2.26$\times$加速（相对scalar），在x86上AVX获得1.81$\times$加速。
+理论加速比（ARM: 4$\times$, x86: 8$\times$）因内存带宽瓶颈而未能达成---
+Flat search每query需读取38.4~MB base数据，算术强度仅$\approx$0.5~FLOP/Byte，
+属于典型的内存密集型工作负载。
+
+(2) ARM上unroll4反而不如单累加器NEON（10.21~ms vs 8.43~ms），
+说明Kunpeng-920的NEON流水线深度不足以吸收4路展开的延迟差异，
+额外的寄存器压力增加了spill开销。x86上SSE的4路展开也存在类似问题。
+
+(3) x86的AVX-256（1.49~ms, 2.39$\times$）相比ARM NEON（8.43~ms, 2.26$\times$），
+绝对速度快5.67$\times$。x86 AVX2相对加速比（2.39$\times$）超过ARM NEON（2.26$\times$），
+因为AVX2的256-bit位宽（8 lanes）是NEON 128-bit（4 lanes）的2倍，且i9-14900HX的
+OoO执行在vector模式下同样高效。
+
+(4) Prefetch在x86上有可见收益：最优prefetch距离=64时延迟1.31~ms（vs 无prefetch 1.49~ms,
+12\%加速），说明即使i9-14900HX有硬件prefetcher，对38.4~MB的大数据流的软件prefetch仍能减少
+cold miss。
+
+\subsection{SQ-SIMD实验结果}
+
+\begin{table}[H]
+\centering
+\caption{SQ8 coarse+rerank性能（x86平台）}
+\label{tab:sq}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{配置} & \textbf{Total(ms)} & \textbf{Coarse(ms)} & \textbf{Rerank(ms)} & \textbf{Recall@10} \\
+\midrule
+SQ8-p100  & 3.31 & 3.28 & 0.03 & 1.000 \\
+SQ8-p500  & 3.77 & 3.62 & 0.14 & 1.000 \\
+SQ8-p1000 & 3.13 & 2.97 & 0.16 & 1.000 \\
+SQ8-p2000 & 4.15 & 3.72 & 0.41 & 1.000 \\
+SQ8-p5000 & 5.67 & 4.52 & 1.12 & 1.000 \\
+SQ8-U8SIMD-p2000 & 1.79 & 1.39 & 0.39 & 0.275 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{分析}：
+(1) SQ8 coarse scan的主要瓶颈是$d\times 256$的float LUT查表（$96\times 256\times 4=96$~KB），
+超过L1D容量（48KB），导致频繁cache miss。
+
+(2) SQ8-U8SIMD路径（query也量化为uint8，用整数dot做coarse search）虽然速度快
+（2.69~ms），但recall极低（0.275），因为uint8内积距离无法有效保持float内积距离的顺序关系。
+
+(3) SQ8存储压缩比4$\times$（38.4~MB$\to$9.6~MB）是其主要优势，适合内存受限场景。
+
+\subsection{PQ-ADC与PQ-SDC实验结果}
+
+\begin{table}[H]
+\centering
+\caption{PQ-ADC查询性能（x86平台, Ks=256）}
+\label{tab:pq_adc}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{配置} & \textbf{Recall} & \textbf{LUT(ms)} & \textbf{Scan(ms)} & \textbf{Rerank(ms)} & \textbf{Total(ms)} \\
+\midrule
+PQ-ADC-M8-p1000  & 0.983 & 0.012 & 0.940 & 0.189 & 1.558 \\
+PQ-ADC-M8-p5000  & 1.000 & 0.014 & 0.946 & 0.735 & 2.240 \\
+PQ-ADC-M12-p1000 & 0.997 & 0.013 & 0.822 & 0.176 & 1.502 \\
+PQ-ADC-M12-p2000 & 0.999 & 0.014 & 0.973 & 0.307 & 1.695 \\
+PQ-ADC-M12-p5000 & 1.000 & 0.012 & 0.938 & 0.727 & 2.069 \\
+PQ-ADC-M16-p1000 & 1.000 & 0.017 & 0.972 & 0.153 & 1.377 \\
+PQ-ADC-M16-p2000 & 1.000 & 0.019 & 0.853 & 0.281 & 1.377 \\
+PQ-ADC-M16-p5000 & 1.000 & 0.018 & 0.943 & 0.742 & 2.379 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{PQ-ADC vs PQ-SDC对比（ARM平台, M=16）}
+\label{tab:adc_sdc}
+\begin{tabular}{lccc}
+\toprule
+\textbf{方法} & \textbf{Recall@10} & \textbf{Total(ms)} & \textbf{Scan(ms)} \\
+\midrule
+PQ-SDC-M16-coarse   & 0.755 & 3.478 & 3.448 \\
+PQ-SDC-M16-p1000    & 0.993 & 3.729 & 3.406（+rerank 0.280）\\
+PQ-ADC-M16-p1000    & 0.998 & 3.508 & 3.091（+rerank 0.416）\\
+PQ-ADC-sel-M16-p2000 & 0.99995 & 3.584 & 3.058（+rerank 0.525）\\
+FastScan-ADC-b64-p1500 & 0.99995 & 3.124 & 2.747（+rerank 0.376）\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{分析}：
+(1) PQ-ADC的recall显著优于同配置PQ-SDC（ADC仅量化base）。
+SDC coarse-only（$p=0$）recall仅0.755，双重量化导致严重精度损失。
+
+(2) M值的trade-off：$M=8$ scan最快但粗排精度最低（需更大$p$维持recall）；
+$M=16$粗排精度最高但scan稍慢。$M=12$在latency-recall两端取得较好平衡。
+
+(3) 延迟分解显示scan阶段占总延迟的60--70\%，select（nth\_element）占10--20\%，
+rerank占5--15\%，LUT构建不到1\%。这说明PQ查询的主要瓶颈是scan查表累加。
+
+\subsection{FastScan实验结果}
+
+\begin{table}[H]
+\centering
+\caption{FastScan vs Naive PQ Scan（x86平台, M=16, recall=1.0）}
+\label{tab:fastscan}
+\begin{tabular}{lccc}
+\toprule
+\textbf{方法} & \textbf{Total(ms)} & \textbf{Blocksize} & \textbf{vs Naive best} \\
+\midrule
+Naive PQ-ADC-M16-p500  & 1.172 & --   & 1.00$\times$ (baseline) \\
+Naive PQ-ADC-M16-p1000 & 1.453 & --   & 0.81$\times$ \\
+Naive PQ-ADC-M16-p2000 & 1.279 & --   & 0.92$\times$ \\
+\midrule
+FastScan-ADC-p500-b128  & \textbf{1.057} & 128 & \textbf{1.11$\times$ faster} \\
+FastScan-ADC-p500-b16   & 1.104 & 16  & 1.06$\times$ faster \\
+FastScan-ADC-p500-b64   & 1.127 & 64  & 1.04$\times$ faster \\
+FastScan-ADC-p1000-b128 & 1.152 & 128 & 1.02$\times$ faster \\
+FastScan-ADC-p2000-b64  & 1.204 & 64  & 0.97$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{分析}：
+(1) 修复后FastScan在x86上以1.057~ms超越最优naive PQ-ADC（1.172~ms），加速1.11$\times$。
+这验证了lane-major布局+寄存器累加的有效性：消除内存RMW后，FastScan的uint8 LUT
+scan比naive的float LUT scan更快，因为uint8 LUT仅需256字节/part（4KB总量），
+比float LUT（16KB）更紧凑，L1命中率更高。
+
+(2) block size=128在x86上表现最优（1.057~ms），因为更大的block减少block间切换开销，
+且i9-14900HX的L1D（48KB P-core）可以容纳128条lane的scores工作集。
+
+(3) FastScan p值越大延迟越高（p=500→2000: 1.057→1.204~ms），差异主要来自nth\_element
+选择阶段和rerank阶段。在recall=1.0前提下，p=500已足够（粗排质量高）。
+
+(4) FastScan的scan阶段（0.341~ms）比naive PQ-ADC scan（0.465~ms）快26.7\%，
+直接体现了LUT量化和寄存器累加的双重收益。但LUT量化增加了LUT构建时间（0.020 vs 0.009~ms），
+总体净收益约11\%。
+
+\subsection{SDC Pipeline实验结果}
+
+ARM平台pipeline加速效果有限（3.729$\to$3.501~ms，仅6.1\%），
+因为query编码阶段极短（约0.03~ms，占不到1\%），scan占91\%是绝对瓶颈。
+pipeline在编码较重的场景下更具价值。
+
+\subsection{Perf Counter分析（ARM平台）}
+
+\begin{table}[H]
+\centering
+\caption{ARM perf counter对比（Q=2000, repeat=3）}
+\label{tab:perf}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Kernel} & \textbf{Cycles/Q} & \textbf{IPC} & \textbf{L1D miss} & \textbf{LLC miss} & \textbf{Recall} \\
+\midrule
+Flat-NEON           & 24.10M & 0.88 & 2.68\% & 40.11\% & 0.99995 \\
+PQ-ADC-M16-p2000    & 12.84M & 1.69 & 0.60\% & 17.16\% & 0.99995 \\
+PQ-ADC-sel-M16-p2000 & 10.85M & 1.78 & 0.84\% & 19.67\% & 0.99995 \\
+FastScan-ADC-b64-p1500 & \textbf{9.72M} & \textbf{2.14} & 0.60\% & 20.91\% & 0.99995 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Flat-NEON的IPC最低（0.88），LLC miss最高（40.11\%）---38.4~MB/query远超cache容量。
+PQ将IPC提升至1.69--1.78，code仅$M$字节/向量。FastScan以IPC=2.14获最优结果，
+比Flat-NEON减少59.7\% cycles/query。
+
+\subsection{x86 vs ARM SIMD对比}
+
+\begin{table}[H]
+\centering
+\caption{ISA关键差异}
+\label{tab:isa}
+\begin{tabular}{lcc}
+\toprule
+\textbf{特征} & \textbf{ARM NEON} & \textbf{x86 AVX2} \\
+\midrule
+SIMD位宽 & 128-bit & 256-bit \\
+float lanes & 4 & 8 \\
+FMA & 原生(\texttt{fmla}) & 需\texttt{-mfma} \\
+非对齐加载 & 自动 & \texttt{loadu}/\texttt{load}区别 \\
+水平求和 & \texttt{vaddvq\_f32}(AArch64) & 手动extract+add \\
+Prefetch & \texttt{\_\_builtin\_prefetch} & \texttt{\_mm\_prefetch} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{性能差异根因}：
+(1) \textbf{时钟频率}：i9-14900HX P-core boost 5.8GHz vs Kunpeng-920 $\approx$2.6GHz（2.2$\times$）。
+(2) \textbf{SIMD位宽}：AVX2提供2$\times$于NEON的每指令数据吞吐。
+(3) \textbf{内存带宽}：DDR5-5600（$\approx$89.6~GB/s）vs DDR4（$\approx$25.6~GB/s），3.5$\times$差距。
+(4) \textbf{微架构}：x86宽发射OoO执行 vs ARM较窄/in-order执行，IPC差异显著。
+
+\subsection{汇编分析（x86 MSVC）}
+
+\texttt{bench\_x86.cod}分析确认：
+\begin{itemize}[nosep]
+    \item VEX-prefix 256-bit指令: \texttt{vmulps ymm}, \texttt{vaddps ymm}, \texttt{vmovups ymm}
+    \item 4路YMM累加器: ymm2, ymm3, ymm4, ymm5
+    \item 无FMA融合: \texttt{vfmadd231ps}未出现（MSVC \texttt{/arch:AVX2}不定义\texttt{\_\_FMA\_\_}）
+    \item 循环控制为标量指令（\texttt{add}, \texttt{cmp}, \texttt{jb}），占比较小
+\end{itemize}
+
+\subsection{综合结果汇总}
+
+\begin{table}[H]
+\centering
+\caption{最优配置对比（双平台）}
+\label{tab:summary}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{方法} & \textbf{平台} & \textbf{Lat.(ms)} & \textbf{Recall} & \textbf{Index} & \textbf{加速比} \\
+\midrule
+Flat-Scalar        & ARM & 19.08 & 1.00000 & 38.4~MB & 1.00$\times$ \\
+Flat-NEON          & ARM & 8.43  & 1.00000 & 38.4~MB & 2.26$\times$ \\
+Flat-Scalar        & x86 & 3.56  & 1.00000 & 38.4~MB & 1.00$\times$ \\
+Flat-AVX           & x86 & 1.49  & 1.00000 & 38.4~MB & 2.39$\times$ \\
+Flat-AVX+Prefetch  & x86 & 1.31  & 1.00000 & 38.4~MB & 2.72$\times$ \\
+SQ8-p1000          & x86 & 3.13  & 1.00000 & 9.6~MB  & 1.14$\times$ \\
+PQ-ADC-M16-p500    & x86 & 1.17  & 1.00000 & 1.6~MB  & 3.04$\times$ \\
+PQ-SDC-M16-p5000   & x86 & 2.18  & 1.00000 & 1.6~MB  & 1.63$\times$ \\
+FastScan-ADC-p500-b128 & x86 & \textbf{1.06} & 1.00000 & 1.6~MB  & \textbf{3.36$\times$} \\
+FastScan-ADC-b64-p1500 & ARM & 3.12 & 0.99995 & 1.6~MB  & 6.11$\times$ \\
+\bottomrule
+\multicolumn{6}{l}{\footnotesize 加速比=Flat-Scalar(同平台)/该方法 Latency} \\
+\end{tabular}
+\end{table}
+
+\subsection{Pareto Frontier分析}
+
+在latency-recall平面上（x86平台）：
+\begin{itemize}[nosep]
+    \item \textbf{最低延迟}：FastScan-ADC-M16-p500-b128（1.057~ms, recall=1.0）--- 最优综合配置
+    \item \textbf{精确基线}：Flat-AVX-prefetch64（1.309~ms, recall=1.0）--- 保证完全精确，无需训练
+    \item \textbf{Cache友好低存储}：PQ-ADC-M16-p500（1.172~ms, recall=1.0, index=1.6~MB）
+    \item \textbf{存储优先}：SQ8-p100（3.308~ms, recall=1.0, index=9.6~MB）
+\end{itemize}
+
+%=====================================================================
+\section{进阶要求完成情况}
+%=====================================================================
+
+\subsection{手写SIMD vs 自动向量化对比（完成）}
+
+在ARM和x86双平台对比了scalar、auto-vec、manual SIMD三个版本。
+ARM上手写NEON加速2.26$\times$（vs scalar），x86上手写AVX加速1.81$\times$。
+汇编分析确认手写版本使用packed SIMD指令，无scalar残留。
+
+\subsection{x86 vs ARM SIMD对比（完成）}
+
+系统比较了两个平台的ISA、SIMD位宽、FMA支持、内存带宽，
+从时钟频率、SIMD位宽、内存子系统三个维度定量分析了性能差异根因。
+
+\subsection{Loop Unrolling（完成）}
+
+ARM NEON实现2路/4路展开；x86 SSE实现4路展开，AVX实现4路展开。
+实验发现ARM上4路展开反而不如单累加器（10.21 vs 8.43~ms），
+x86上4路展开效果中性（2.80 vs 2.74~ms），均不如理论预期。
+
+\subsection{Top-k维护优化（完成）}
+
+实现Fixed-array TopK和标准堆两种top-k策略。
+FixedTopK在ARM和x86上均获得小幅加速（约1--2\%），
+因为避免了heap的O($\log k$)调整开销。
+
+\subsection{Prefetch/Alignment分析（完成）}
+
+x86上扫描prefetch distance $\in \{4, 8, 16, 32, 64\}$。
+distance=4在i9-14900HX上获最优延迟（2.55~ms），
+但软件prefetch的总收益有限（vs 2.72~ms无prefetch），因为硬件prefetcher已足够有效。
+
+\subsection{AI辅助学习（完成）}
+
+详见附录A。AI用于代码结构建议、调试辅助和报告大纲。所有算法实现、
+实验设计和数据分析由作者主导完成。
+
+%=====================================================================
+\section{总结}
+%=====================================================================
+
+本文围绕ANN查询阶段的距离计算优化，在ARM Kunpeng-920（NEON）和
+Intel Core i9-14900HX（AVX2）两个平台上完成了Flat-SIMD、
+SQ-SIMD、PQ-SDC、PQ-ADC、SDC流水线并行和FastScan六类算法的系统实验。
+
+主要发现：
+\begin{enumerate}[nosep]
+    \item 手写SIMD在Flat search上获得2.39$\times$（x86 AVX2）和2.26$\times$（ARM NEON）加速，但受内存带宽限制，远未达到SIMD lane数的理论加速比。
+    \item 优化后的FastScan以1.057~ms（x86）成为最优方案，相对Flat-Scalar加速3.36$\times$，相对naive PQ-ADC加速1.11$\times$。核心优化是lane-major code布局消除内存RMW+4路寄存器累加。
+    \item 在ARM上，原版FastScan将scan时间降低24.4\%（3.635→2.747~ms），主要因为ARM in-order微架构对cache优化更敏感。x86上经过本次修复，FastScan scan阶段也降低了26.7\%（0.465→0.341~ms）。
+    \item x86 AVX2的绝对性能远超ARM NEON（5.67$\times$），根因是更高的时钟频率（2.2$\times$）、更宽的SIMD位宽（2$\times$）和更高的内存带宽（3.5$\times$）。
+    \item PQ/FastScan将工作负载从内存密集型（Flat: IPC=0.88, LLC miss=40\%）转向计算密集型（PQ: IPC=1.69--2.14, LLC miss=17--21\%），更适配现代CPU微架构。FastScan的uint8 LUT扫描进一步降低了L1 cache压力。
+\end{enumerate}
+
+所有数据来自真实运行（ARM集群 + x86本地），代码见Git仓库。
+
+%=====================================================================
+\appendix
+\section{AI辅助学习记录}
+
+\subsection{初始设计}
+
+基于课程框架\texttt{flat\_scan.h}的朴素串行搜索，设计SIMD阶段距离计算加速方案。
+初始计划覆盖Flat-SIMD、SQ、PQ三大类算法。
+
+\subsection{AI咨询与采纳}
+
+\textbf{采纳}：保留scalar/auto/manual三版本对比；perf计数器深度分析；
+PQ实现覆盖SDC和ADC；跨平台条件编译；数据由真实运行生成。
+
+\textbf{拒绝/延后}：不修改test.sh/qsub.sh；不输出test\_gt；
+OPQ和RaBitQ留作后续（超出本次强制范围）。
+
+\subsection{实验验证}
+
+所有采纳建议均经实验验证。例如unroll策略效果因平台而异---
+ARM上unroll4反而不如单累加器，修正了初始设计中“展开越多越好”的假设。
+
+%=====================================================================
+\section{关键汇编输出}
+
+\subsection{x86 AVX2汇编（MSVC /O2 /arch:AVX2）}
+
+\begin{lstlisting}[language={[x86masm]Assembler}]
+; inner_product_avx 核心循环 --- 4路YMM累加器展开
+; ymm2, ymm3, ymm4, ymm5 = 累加器
+vmovups  ymm0, YMMWORD PTR [rax+rcx-32]   ; load a[d]
+vmulps   ymm1, ymm0, YMMWORD PTR [rax-32] ; a[d] * b[d]
+vaddps   ymm2, ymm1, ymm2                  ; sum0 += ...
+vmovups  ymm0, YMMWORD PTR [rax+rcx]       ; load a[d+8]
+vmulps   ymm1, ymm0, YMMWORD PTR [rax]     ; a[d+8] * b[d+8]
+vaddps   ymm3, ymm1, ymm3                  ; sum1 += ...
+; ... (2 more accumulators ymm4, ymm5 for d+16, d+24)
+\end{lstlisting}
+
+确认：使用256-bit YMM寄存器、VEX前缀指令。FMA融合未启用（无\texttt{vfmadd231ps}），
+因为MSVC的\texttt{/arch:AVX2}不定义\texttt{\_\_FMA\_\_}宏。
+
+\subsection{ARM NEON汇编（GCC -O2）}
+
+\begin{lstlisting}[language={[x86masm]Assembler}]
+; inner_product_neon_unroll4
+ldr    q0, [x1]        ; load 4 floats
+ldr    q1, [x0]        ; load 4 floats
+fmla   v4.4s, v0.4s, v1.4s  ; fused multiply-add (4 lanes)
+; 4-way: v4, v5, v6, v7 accumulators
+\end{lstlisting}
+
+确认：NEON 128-bit寄存器、\texttt{fmla}融合乘加指令（单指令完成乘法和累加）。
+
+\subsection{ARM perf输出（FastScan-ADC-b64-p1500）}
+
+\begin{lstlisting}[language=bash]
+cycles:        58,317,203,413
+instructions: 125,026,307,050
+IPC:           2.14
+L1-dcache-load-misses: 0.60%
+LLC-load-misses:       20.91%
+branch-misses:         81,930.87 / query
+\end{lstlisting}
+
+\end{document}

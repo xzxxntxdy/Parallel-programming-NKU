@@ -7,33 +7,56 @@
 #include <utility>
 #include <vector>
 
-#if defined(__AVX__) || defined(__SSE__)
-#include <immintrin.h>
-#endif
-
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
-#include <arm_neon.h>
-#define ANN_HAS_NEON 1
+// --- SIMD feature detection (GCC, Clang, MSVC) ---
+#ifdef _MSC_VER
+  // MSVC: x64 always has SSE2; AVX/AVX2 via /arch: flag
+  #if defined(__AVX2__) || defined(__AVX__)
+    #define ANN_HAS_AVX 1
+    #define ANN_HAS_SSE 1
+  #else
+    #define ANN_HAS_AVX 0
+    #define ANN_HAS_SSE 1  // SSE2 baseline on x64
+  #endif
+  #define ANN_HAS_NEON 0
 #else
-#define ANN_HAS_NEON 0
+  // GCC / Clang
+  #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
+    #include <arm_neon.h>
+    #define ANN_HAS_NEON 1
+  #else
+    #define ANN_HAS_NEON 0
+  #endif
+  #if defined(__AVX__) || defined(__AVX2__)
+    #define ANN_HAS_AVX 1
+  #else
+    #define ANN_HAS_AVX 0
+  #endif
+  #if defined(__SSE__) || defined(__SSE2__)
+    #define ANN_HAS_SSE 1
+  #else
+    #define ANN_HAS_SSE 0
+  #endif
 #endif
 
-#if defined(__AVX__)
-#define ANN_HAS_AVX 1
-#else
-#define ANN_HAS_AVX 0
+#if ANN_HAS_AVX || ANN_HAS_SSE
+  #include <immintrin.h>
 #endif
 
-#if defined(__SSE__)
-#define ANN_HAS_SSE 1
-#else
-#define ANN_HAS_SSE 0
-#endif
-
+// GCC no-vectorize attribute
 #if defined(__GNUC__) && !defined(__clang__)
-#define ANN_NOVEC __attribute__((noinline, optimize("no-tree-vectorize")))
+  #define ANN_NOVEC __attribute__((noinline, optimize("no-tree-vectorize")))
+#elif defined(_MSC_VER)
+  #define ANN_NOVEC __declspec(noinline)
 #else
-#define ANN_NOVEC
+  #define ANN_NOVEC
+#endif
+
+// __builtin_prefetch → _mm_prefetch on MSVC
+#ifdef _MSC_VER
+  #include <xmmintrin.h>
+  #define ANN_PREFETCH(addr) _mm_prefetch((const char*)(addr), _MM_HINT_T0)
+#else
+  #define ANN_PREFETCH(addr) __builtin_prefetch((addr), 0, 1)
 #endif
 
 namespace ann {
@@ -371,12 +394,10 @@ flat_search_method(const float* base,
     if (uses_fixed_topk(method)) {
         FixedTopK topk(k);
         for (size_t i = 0; i < base_number; ++i) {
-#if defined(__GNUC__)
             if (uses_prefetch(method) && prefetch_distance > 0 &&
                 i + prefetch_distance < base_number) {
-                __builtin_prefetch(base + (i + prefetch_distance) * vecdim, 0, 1);
+                ANN_PREFETCH(base + (i + prefetch_distance) * vecdim);
             }
-#endif
             float distance = ip_distance(base + i * vecdim, query, vecdim, method);
             topk.push(distance, static_cast<uint32_t>(i));
         }
@@ -385,12 +406,11 @@ flat_search_method(const float* base,
 
     std::priority_queue<std::pair<float, uint32_t> > heap;
     for (size_t i = 0; i < base_number; ++i) {
-#if defined(__GNUC__)
-        if (uses_prefetch(method) && prefetch_distance > 0 &&
+            if (uses_prefetch(method) && prefetch_distance > 0 &&
             i + prefetch_distance < base_number) {
-            __builtin_prefetch(base + (i + prefetch_distance) * vecdim, 0, 1);
+            ANN_PREFETCH(base + (i + prefetch_distance) * vecdim);
         }
-#endif
+
         float distance = ip_distance(base + i * vecdim, query, vecdim, method);
         push_heap_topk(heap, distance, static_cast<uint32_t>(i), k);
     }

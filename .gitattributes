@@ -1,0 +1,14 @@
+# Force LF for files that must run on Linux
+*.sh text eol=lf
+*.h text eol=lf
+*.cc text eol=lf
+*.py text eol=lf
+*.tex text eol=lf
+
+# Binary files
+*.pdf binary
+*.png binary
+*.svg binary
+*.index binary
+*.fbin binary
+*.bin binary
