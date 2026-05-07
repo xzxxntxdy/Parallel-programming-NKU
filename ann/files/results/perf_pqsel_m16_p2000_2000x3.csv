@@ -1,0 +1,9 @@
+# started on Thu May  7 10:30:39 2026
+
+65102424665,,cycles:u,25443551760,100.00,,
+115568926108,,instructions:u,25443551760,100.00,1.78,insn per cycle
+509476256,,branch-misses:u,25443551760,100.00,,
+33093552338,,L1-dcache-loads:u,25443551760,100.00,,
+277877016,,L1-dcache-load-misses:u,25443551760,100.00,0.84,of all L1-dcache accesses
+380706508,,LLC-loads:u,25443551760,100.00,,
+74874469,,LLC-load-misses:u,25443551760,100.00,19.67,of all LL-cache accesses

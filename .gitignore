@@ -10,6 +10,7 @@ vtune/
 # Python cache
 __pycache__/
 *.pyc
+.venv/
 
 # Editor / OS junk
 .vscode/
