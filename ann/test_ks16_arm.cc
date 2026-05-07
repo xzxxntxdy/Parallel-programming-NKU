@@ -31,15 +31,17 @@ float calc_recall(const std::priority_queue<std::pair<float, uint32_t>>& res,
 
 int main() {
     std::string D="/anndata"; size_t bn,bd,qn,qd,gn,gd;
-    auto lf=[](auto&p,size_t&n,size_t&d){std::ifstream f(p,std::ios::binary);
-        uint32_t n32=0,d32=0;f.read((char*)&n32,4);f.read((char*)&d32,4);n=n32;d=d32;
-        auto*b=new float[n*d];f.read((char*)b,n*d*4);f.close();return b;};
-    auto li=[](auto&p,size_t&n,size_t&d){std::ifstream f(p,std::ios::binary);
-        uint32_t n32=0,d32=0;f.read((char*)&n32,4);f.read((char*)&d32,4);n=n32;d=d32;
-        auto*b=new int[n*d];f.read((char*)b,n*d*4);f.close();return b;};
-    float *base=lf(D+"/DEEP100K.base.100k.fbin",bn,bd);
-    float *q=lf(D+"/DEEP100K.query.fbin",qn,qd);
-    int *gt=li(D+"/DEEP100K.gt.query.100k.top100.bin",gn,gd);
+    auto loadf=[&](const std::string& p,size_t& n,size_t& d)->float*{
+        std::ifstream f(p,std::ios::binary); uint32_t n32=0,d32=0;
+        f.read((char*)&n32,4);f.read((char*)&d32,4);n=n32;d=d32;
+        float*b=new float[n*d];f.read((char*)b,n*d*4);f.close();return b;};
+    auto loadi=[&](const std::string& p,size_t& n,size_t& d)->int*{
+        std::ifstream f(p,std::ios::binary); uint32_t n32=0,d32=0;
+        f.read((char*)&n32,4);f.read((char*)&d32,4);n=n32;d=d32;
+        int*b=new int[n*d];f.read((char*)b,n*d*4);f.close();return b;};
+    float *base=loadf(D+"/DEEP100K.base.100k.fbin",bn,bd);
+    float *q=loadf(D+"/DEEP100K.query.fbin",qn,qd);
+    int *gt=loadi(D+"/DEEP100K.gt.query.100k.top100.bin",gn,gd);
     const size_t N=bn, nq=20, k=10;
 
     printf("=== ARM Ks=16 M-sweep ===\nN=%zu nq=%zu\n\n", N, nq);

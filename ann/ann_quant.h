@@ -1096,8 +1096,8 @@ pq4_scan_search(const PQ4Index& idx, const float* base, const float* query,
     }
 #elif ANN_HAS_NEON
     // NEON vtbl: process 16 vectors per SQ, vtbl does 16-entry LUT lookup
-    const uint8x16_t z_u8 = vdupq_n_u8(0);
-    const uint16x8_t z_u16 = vdupq_n_u16(0);
+
+
     const uint32x4_t z_u32 = vdupq_n_u32(0);
     for (size_t g = 0; g < n_groups; g++) {
         size_t base = g * 16;
