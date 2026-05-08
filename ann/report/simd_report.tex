@@ -128,8 +128,7 @@ Flat Search是最基础的ANNS查询方式：对每个query遍历全部$N=100000
 
 \subsubsection{SIMD向量化策略}
 
-SIMD（Single Instruction Multiple Data）允许在单个CPU指令中同时对多个数据执行相同操作。
-对于内积计算$\sum_i q_i x_i$，可将其映射为向量化的批量乘加：
+SIMD在单个指令中同时对多个数据执行相同操作，内积$\sum_i q_i x_i$天然适合向量化的批量乘加：
 
 \begin{table}[H]
 \centering
@@ -154,7 +153,7 @@ for (size_t d = 0; d + 4 <= dim; d += 4)
     sum = vmlaq_f32(sum, vld1q_f32(a + d), vld1q_f32(b + d));
 float result = 1.0f - vaddvq_f32(sum);  // horizontal add on AArch64
 \end{lstlisting}
-NEON的\texttt{fmla}指令将乘法与加法融合为单个$\mu$op，比分离的mul+add减少一半的指令发射压力。
+NEON的\texttt{fmla}将乘加融合为单条指令，减少一半指令发射压力。
 
 x86 AVX2版本使用4路\texttt{\_\_m256}累加器展开以隐藏乘法延迟（AGNER FOG优化法则）：
 \begin{lstlisting}
@@ -168,12 +167,9 @@ for (; d + 32 <= dim; d += 32) {  // 4 chunks × 8 floats = 32
 }
 // Horizontal sum: ymm → xmm → scalar
 \end{lstlisting}
-4路展开使x86 OoO引擎可以同时飞行4条独立的256-bit乘加流水线。
+4路展开使x86 OoO引擎可同时飞行4条独立的256-bit乘加流水线。
 
-理论加速比（NEON 4$\times$, AVX2 8$\times$）远大于实际，因为Flat Search的瓶颈在内存：
-即使SIMD将计算速度提升到无限大，每query仍需等待38.4~MB数据从内存传输到CPU。
-以ARM平台DDR4-2666约21.3~GB/s的理论带宽计，仅数据传输就需要$\approx 1.8$~ms，
-这设置了Flat Search的物理下限。
+理论加速比远大于实际，瓶颈在内存：每query 38.4~MB数据，ARM DDR4-2666理论带宽下限$\approx 1.8$~ms，计算再快也受限于此。
 
 \subsubsection{编译器自动向量化 vs 手写SIMD}
 
@@ -266,24 +262,9 @@ float内积距离的顺序关系——量化误差在$d=96$维中累积后，距
 
 \subsubsection{编码流程}
 
-Product Quantization是当前ANN领域最广泛使用的向量压缩技术。其编码分三步：
-
-\textbf{第一步：向量切分}。将$d=96$维均匀切分为$M$个子空间，每个子空间维度
-$\text{subdim}=d/M$。例如$M=8$时subdim$=12$，$M=16$时subdim$=6$。
-切分后每条向量变为$M$个独立子向量。
-
-\textbf{第二步：子空间聚类}。对每个子空间，采集训练样本（本项目取2048条向量），
-在该子空间的subdim维上运行KMeans算法（$\text{Ks}=256$个聚类中心，10次迭代），
-得到$M$组codebook（每组$256\times\text{subdim}$个float参数）。
-
-KMeans的每次迭代需要将每个训练样本分配到最近的聚类中心：
-$\text{assign}[i] = \arg\min_c \|\text{sample}_i - \text{center}_c\|^2$，
-然后更新中心为所属样本的均值。复杂度为$O(\text{iters}\times\text{samples}\times\text{Ks}\times\text{subdim})$。
-对$M=16$, subdim$=6$, samples$=2048$：$10\times 2048\times 256\times 6\approx 31.5$M次减法+平方操作。
-
-\textbf{第三步：编码}。对每个base向量的每个子空间，用最近中心ID表示。
-原来subdim个float（$4\times\text{subdim}$字节）被压缩为1个uint8（1字节），
-压缩比$4\times\text{subdim}$。例如$M=16$时整个96维向量压缩为16字节，压缩比$384/16=24\times$。
+Product Quantization将向量空间分解为子空间并分别量化。编码分三步：将$d=96$切分为$M$个子空间（subdim$=d/M$）；
+每子空间取2048条训练样本运行KMeans（$\text{Ks}=256$中心，10次迭代），得到$M$组codebook；
+每向量各子空间以最近中心ID表示，subdim个float$\to$1个uint8（压缩比$4\times\text{subdim}$，$M=16$时整向量从384B压至16B）。
 
 \subsubsection{SDC距离计算与误差分析}
 
@@ -298,12 +279,8 @@ D_m[c_q][c_b] = \langle C_m[c_q], C_m[c_b] \rangle, \quad c_q, c_b \in [0, 255]
 \hat{\delta}_{\text{SDC}}(q, x_i) = 1 - \sum_{m=0}^{M-1} D_m[\text{qcode}[m]][\text{base\_code}[i][m]]
 \end{equation}
 
-SDC的主要误差来源是\textbf{双重量化}：
-(1) base端量化误差$\epsilon_b = \|x_i^{(m)} - C_m[\text{code}_b]\|$，
-(2) query端量化误差$\epsilon_q = \|q^{(m)} - C_m[\text{code}_q]\|$。
-当$M$较小时（subdim较大），聚类中心对高维子向量的表达能力更强，
-但code数量更少导致base编码精度更高；当$M$较大时反之以更多code换取更高精度。
-$M$的选择是SDC的核心超参数权衡。
+SDC误差来自双重量化：base端$\epsilon_b$和query端$\epsilon_q$。$M$较小时subdim大、聚类表达强但code少；
+$M$较大时以更多code换取精度——$M$是SDC的核心超参数。
 
 \begin{table}[H]
 \centering
@@ -325,15 +302,10 @@ $M$ & subdim & base code & ADC LUT & SDC table & 查表次数/query \\
 
 \subsubsection{算法原理}
 
-ADC（Asymmetric Distance Computation）不编码query，而是每query在线构建局部LUT：
-\begin{equation}
-\text{LUT}_m[c] = \langle q^{(m)}, C_m[c] \rangle, \quad c \in [0, 255]
-\end{equation}
-LUT构建需要$M\times \text{Ks}\times\text{subdim}$次乘加（$M=16$时$16\times 256\times 6=24$K次），
-计算量极小（$\approx 0.01$~ms）。base扫描时查LUT累加：
-\begin{equation}
-\hat{\delta}_{\text{ADC}}(q, x_i) = 1 - \sum_{m=0}^{M-1} \text{LUT}_m[\text{base\_code}[i][m]]
-\end{equation}
+ADC不编码query，每query在线构建局部LUT：
+$\text{LUT}_m[c] = \langle q^{(m)}, C_m[c] \rangle, c \in [0, 255]$。
+LUT构建需$M\times 256\times\text{subdim}$次乘加（$M=16$时仅24K次，$\approx 0.01$~ms）。
+base扫描时查LUT累加：$\hat{\delta}_{\text{ADC}}(q, x_i) = 1 - \sum_m \text{LUT}_m[\text{base\_code}[i][m]]$。
 
 \subsubsection{ADC vs SDC对比}
 
@@ -551,6 +523,8 @@ Flat+Fixed TopK (array heap)    & 7.50  & 2.54$\times$ & 1.31 & 2.72$\times$ \\
 (1) 手写SIMD在ARM上加速2.58$\times$（19.08$\to$7.39~ms），x86上加速2.39$\times$（3.56$\to$1.49~ms）。
 均远低于SIMD lane数理论加速比（NEON 4$\times$, AVX2 8$\times$），确认Flat Search为内存密集型负载。
 
+\textbf{注：本文所有实验以recall@10$\approx$1为目标。为维持近似搜索精度，部分方法（如SQ8、PQ-SDC）需以较大的rerank候选数$p$来补偿量化误差，导致latency高于不做精度约束的场景。这是精度-延迟权衡的固有代价，而非方法本身的效率问题。}
+
 (2) ARM上编译器自动向量化效果（1.61$\times$）明显优于x86（1.11$\times$），
 因为ARM标量基线更弱（in-order），自动向量化的ILP收益更显著。
 ARM上loop unroll进一步从7.39降至7.20~ms（增益2.6\%），收益有限。
@@ -685,7 +659,7 @@ v2的lane-major配合寄存器累加消除此瓶颈。
 
 \begin{figure}[H]
 \centering
-\resizebox{0.88\textwidth}{!}{\figimg{03_fastscan_evolution}}
+\resizebox{0.78\textwidth}{!}{\figimg{03_fastscan_evolution}}
 \caption{FastScan v1$\to$v2演进。(a) code布局与累加方式对比；(b) 双平台延迟：v1在x86倒退，v2最优；(c)(d) ARM/x86扫描阶段时间分解。}
 \label{fig:fse}
 \end{figure}
@@ -756,7 +730,7 @@ SIMD向量化在ARM上收益更大（2.26$\times$ vs 1.81$\times$），
 
 \begin{figure}[H]
 \centering
-\resizebox{0.90\textwidth}{!}{\figimg{01_optimization_journey}}
+\resizebox{0.78\textwidth}{!}{\figimg{01_optimization_journey}}
 \caption{优化全过程：Flat-Scalar到FastScan v2延迟对比。标注为相对同平台Scalar加速比。}
 \label{fig:journey}
 \end{figure}
@@ -768,7 +742,7 @@ FastScan v2在所有$p$配置下scan时间均低于naive PQ-ADC，
 
 \begin{figure}[H]
 \centering
-\resizebox{0.90\textwidth}{!}{\figimg{04_pq_sensitivity}}
+\resizebox{0.78\textwidth}{!}{\figimg{04_pq_sensitivity}}
 \caption{PQ参数灵敏度。(a) M-sweep；(b) p-sweep延迟+recall；(c)(d) coarse vs rerank时间构成。}
 \label{fig:sens}
 \end{figure}
