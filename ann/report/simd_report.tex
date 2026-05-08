@@ -447,11 +447,18 @@ v2的关键改进：
 
 \subsubsection{pshufb SIMD查表为何未采用}
 
-理想FastScan应使用SSSE3的\texttt{pshufb}指令一次完成16个8-bit LUT查表。
-但\texttt{pshufb}仅使用低4位作为索引（每次查16-entry表），
-对256-entry LUT需拆分为16组nibble匹配$+$16次pshufb才能覆盖，开销远超收益
-（实测比标量lane-major慢15$\times$）。pshufb适用场景是$Ks\le 16$（4-bit codes），
-非本项目的$Ks=256$。
+理想FastScan应使用x86 \texttt{pshufb}（ARM等价的\texttt{vqtbl1q\_u8}）一次完成16个8-bit LUT查表。
+但该指令仅使用低4位作为索引（每次查16-entry表），需将Ks降至16才能直接使用。
+
+为此我们实现了v3版本：M=32个子空间、Ks=16，总code大小保持16 bytes/vector不变。
+在x86上pshufb路径获得0.91~ms（相对v2的1.14~ms提速20\%），
+在ARM上NEON vtbl路径获得2.20~ms（相对v2的2.29~ms提速4\%）。
+然而\textbf{ARM上recall从0.99995降至0.996}，即使增大rerank候选数$p$也无法恢复至目标精度。
+根因是$Ks=16$时每子空间仅16个聚类中心，在subdim=3的极低维空间中
+无法有效表达向量分布，粗排阶段漏排导致精排无法挽救。
+
+对256-entry LUT使用pshufb需拆分为16组nibble匹配（实测比标量慢15$\times$），
+因此v3方案在追求recall$\geq$0.99995的目标下被放弃，最终采用v2的Ks=256标量lane-major方案。
 
 \subsubsection{Block size超参数分析}
 
@@ -663,7 +670,10 @@ ARM上SDC pipeline（M=16, p=1000）加速仅6.1\%（3.82$\to$3.50~ms），
 Naive PQ-ADC (M16)   & 3.69 & baseline  & 1.17 & baseline  & 原始float LUT扫描 \\
 FastScan v1 (b64)    & 3.12 & +15\%  & 1.87 & $-$38\%  & part-major, 内存RMW \\
 FastScan v2 (b128)   & 2.44 & +34\%  & 1.06 & +10\%   & lane-major, 寄存器累加 \\
-FastScan v2 (b16)    & 2.16 & +41\%  & 1.10 & +6\%    & 最优ARM配置（recall略低）\\
+FastScan v2 (b16)    & 2.16 & +41\%  & 1.10 & +6\%    & ARM最优（recall=0.996）\\
+\midrule
+\multicolumn{6}{l}{\footnotesize 探索方案：v3（M=32 Ks=16 pshufb/vtbl），x86=0.91ms（+20\%），ARM=2.20ms（+4\%）但ARM recall=0.996，放弃。} \\
+\bottomrule
 \bottomrule
 \end{tabular}
 \end{table}

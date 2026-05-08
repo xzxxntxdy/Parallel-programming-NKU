@@ -1541,14 +1541,20 @@ int main(int argc, char *argv[])
     std::vector<SearchResult> results;
     results.resize(test_number);
 
-    const int final_m2 = 32;        // Ks=16 × 32 SQs = 16B code (same as v2 M=16 Ks=256)
-    const int final_p = 500;        // Ks=16 coarse is precise enough at p=500
-    ann::PQ4Index final_idx;
+    const int final_pq_m = 16;
+    const int final_pq_p = 1500;
+    const int final_pq_ks = 256;
+    const int final_fs_block = 64;
+    ann::PQIndex final_pq_index;
     int64_t final_build_t0 = now_us();
-    ann::build_pq4_index(base, base_number, vecdim, final_m2, 2048, 10, final_idx);
+    ann::build_pq_index(base, base_number, vecdim, final_pq_m, final_pq_ks,
+                        2048, 10, final_pq_index);
+    ann::PQFastScanIndex final_fast_index;
+    ann::build_pq_fastscan_index(final_pq_index, final_fs_block, final_fast_index);
     double final_build_sec = (now_us() - final_build_t0) / 1000000.0;
-    std::cerr << "final ANN path: FastScan-v3-M" << final_m2
-              << "-Ks16-p" << final_p
+    std::cerr << "final ANN path: FastScan-ADC-M" << final_pq_m
+              << "-p" << final_pq_p
+              << "-b" << final_fs_block
               << " build_time_sec=" << final_build_sec << "\n";
 
     // 查询测试代码
@@ -1558,8 +1564,9 @@ int main(int argc, char *argv[])
         int ret = gettimeofday(&val, NULL);
 
         ann::QuantTiming timing;
-        auto res = ann::pq4_scan_search(final_idx, base, test_query + i*vecdim,
-                                         final_p, k, &timing, NULL);
+        auto res = ann::pq_adc_fastscan_search_rerank_timed(final_pq_index, final_fast_index,
+                                                           base, test_query + i*vecdim,
+                                                           final_pq_p, k, &timing, NULL);
 
         struct timeval newVal;
         ret = gettimeofday(&newVal, NULL);
