@@ -49,7 +49,7 @@ GitHub： & \multicolumn{3}{l}{\href{https://github.com/xzxxntxdy/Parallel-progr
 实验覆盖ARM Kunpeng-920（NEON 128-bit）和Intel Core i9-14900HX（AVX2 256-bit）双平台的全部强制实验矩阵，
 所有数据经真实运行验证。
 最终方案FastScan v2（lane-major布局+寄存器累加+4路展开）在ARM上以2.44~ms/query
-（recall@10=0.99995, 7.82$\times$加速），\texttt{bash test.sh 1 1}实测2336.53~$\mu$s，
+（recall@10=0.99995, 7.82$\times$加速），
 在x86上以1.06~ms/query（recall@10=1.0, 3.36$\times$加速）取得全局最优。
 本文详细记录了从Flat-Scalar到FastScan v2的完整优化路径，重点分析了FastScan从v1到v2的
 代码布局优化过程及其背后的cache/microarchitecture原理，通过perf计数器与汇编分析验证优化效果。
@@ -682,7 +682,7 @@ v2的lane-major配合寄存器累加消除此瓶颈。
 \end{figure}
 
 v2在ARM上的scan阶段从3.09降至1.99~ms（35\%），x86上从0.47降至0.34~ms（28\%）。
-v2是双平台一致的全局最优方案。ARM test.sh最终输出：recall=0.99995, latency=2336.53~$\mu$s。
+v2是双平台一致的全局最优方案，ARM上延迟2.44~ms（recall=0.99995），x86上1.06~ms（recall=1.0）。
 
 \subsection{Perf计数器与汇编分析（ARM）}
 
