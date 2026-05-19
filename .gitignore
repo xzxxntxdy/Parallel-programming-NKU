@@ -5,10 +5,23 @@ faiss/
 
 # Build outputs
 build/
+*.exe
+*.dll
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.so
+*.dylib
+
+#envs
+tools/
 
 # Raw profiling results
 vtune/
-*.obj
 
 # Python cache
 __pycache__/

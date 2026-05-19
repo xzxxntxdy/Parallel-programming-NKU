@@ -17,7 +17,6 @@
     #define ANN_HAS_AVX 0
     #define ANN_HAS_SSE 1  // SSE2 baseline on x64
   #endif
-  #define ANN_HAS_SSSE3 ANN_HAS_SSE
   #define ANN_HAS_NEON 0
 #else
   // GCC / Clang
@@ -36,11 +35,6 @@
     #define ANN_HAS_SSE 1
   #else
     #define ANN_HAS_SSE 0
-  #endif
-  #if defined(__SSSE3__)
-    #define ANN_HAS_SSSE3 1
-  #else
-    #define ANN_HAS_SSSE3 0
   #endif
 #endif
 

@@ -1,0 +1,2 @@
+criterion,experiment,method,nthreads,param1,param2,latency_ms,recall@100,speedup,index_mb,build_sec,notes
+min latency with recall@100>=0.95,NONE,,,,,0,0,0,0,1.56515,"no candidate satisfies recall constraint"

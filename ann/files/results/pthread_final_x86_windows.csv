@@ -1,0 +1,2 @@
+criterion,method,nthreads,param1,param2,latency_us,recall@100,build_sec,index_mb,notes
+min latency with recall@100>=0.95,HNSW-StdAsync,32,ef,64,9.316000,0.952683,6.238946,0.000000,M=16; ef_construction=100

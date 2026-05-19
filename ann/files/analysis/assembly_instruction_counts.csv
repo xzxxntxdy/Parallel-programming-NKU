@@ -1,9 +1,0 @@
-pattern,static_count
-neon_fmla_or_vmla,15
-float_mul,45
-float_add,1717
-vector_load_ld1,0
-load_ldr,1925
-prefetch_prfm,2
-horizontal_add,17
-branch,2220

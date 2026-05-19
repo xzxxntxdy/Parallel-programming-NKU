@@ -1,0 +1,2 @@
+criterion,experiment,method,nthreads,param1,param2,latency_ms,recall@100,speedup,index_mb,build_sec,notes
+min latency with recall@100>=0.95,IVF,nl512,32,nprobe,32,0.044471,0.956950,105.319264,0.000000,24.678352,

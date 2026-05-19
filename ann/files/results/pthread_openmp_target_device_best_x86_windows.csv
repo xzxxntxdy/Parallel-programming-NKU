@@ -1,0 +1,2 @@
+"experiment","method","nthreads","param1","param2","latency_ms","recall@100","speedup","index_mb","build_sec","encode_us","lut_us","scan_us","select_us","rerank_us","notes"
+"OpenMP-Target-IVF","LevelZero-IVF-nl2048-cap3840","0","nprobe","81","0.186502","0.950170","17.024230","0.000000","10.386833","27.519000","3.831000","128.732000","19.206000","0.000000","openmp_target_accelerator_device;target_initial_device=0;batch=1000;avg_candidates=3808;coarse_us_in_encode;candidate_fill_us_in_lut"

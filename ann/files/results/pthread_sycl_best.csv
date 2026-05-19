@@ -1,0 +1,2 @@
+criterion,experiment,method,nthreads,param1,param2,latency_ms,recall@100,speedup,index_mb,build_sec,notes
+min latency with recall@100>=0.95,SYCL-IVF,IntelOpenCLGPU-BatchedUSM-IVF-nl512,0,nprobe,30,0.26575,0.95277,11.9475,0,4.4476,"windows_oneapi; selector_env=opencl:gpu; build=SafeO2; selector=intel-gpu; vendor=Intel(R) Corporation; device=Intel(R) RaptorLake-S Mobile Graphics Controller; target_recall=0.950000; batch=128; candidate_capacity=12125; query_layout=dim_major; coarse_host=1; topk_host=1; usm_device=1"

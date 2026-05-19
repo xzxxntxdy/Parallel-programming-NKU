@@ -1,0 +1,2 @@
+experiment,method,nthreads,param1,param2,latency_ms,recall@100,speedup,index_mb,build_sec,encode_us,lut_us,scan_us,select_us,rerank_us,notes
+CUDA-Flat,ExactGPU,0,device,0,0.410661,1,7.73157,0,0,0,0,317.879,85.957,0,"NVIDIA GeForce RTX 4060 Laptop GPU"

@@ -1011,7 +1011,7 @@ pq4_scan_search(const PQ4Index& idx, const float* base, const float* query,
     std::vector<std::pair<float,uint32_t>> coarse(idx.n);
     size_t ng=(idx.n+15)/16;
 
-#if ANN_HAS_SSSE3
+#if ANN_HAS_SSE
     const __m128i z128=_mm_setzero_si128();
     for(size_t g=0;g<ng;g++){size_t base=g*16;size_t nv=std::min((size_t)16,idx.n-base);
         __m128i s0=z128,s1=z128,s2=z128,s3=z128;

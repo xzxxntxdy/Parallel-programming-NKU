@@ -1,0 +1,2 @@
+"experiment","method","nthreads","param1","param2","latency_ms","recall@100","speedup","index_mb","build_sec","encode_us","lut_us","scan_us","select_us","rerank_us","notes"
+"HNSW-ToolCompare","StdAsync","32","ef","64","0.009739","0.954540","375.669371","0.000000","7.662786","0.000000","0.000000","0.000000","0.000000","0.000000","cpp_standard_async"
