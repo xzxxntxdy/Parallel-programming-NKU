@@ -523,15 +523,21 @@ int run_benchmark(const BenchmarkConfig& cfg, const BenchmarkData& data) {
 int run_final(const BenchmarkConfig& cfg, const BenchmarkData& data) {
     const size_t nq = cfg.quick ? capped_queries(cfg, data)
                                 : std::min(data.query_n, data.gt_n);
-    const int best_threads = cfg.arm_quick ? 2 : cfg.final_threads;
     const int best_m = 16;
     const int best_ef_construction = 100;
     const int best_ef = 64;
+#if defined(__aarch64__) || defined(__ARM_NEON) || defined(__ARM_NEON__)
+    const int best_threads = 16;
+    const char* best_method = "HNSW-StdThread";
+#else
+    const int best_threads = cfg.final_threads;
+    const char* best_method = "HNSW-StdAsync";
+#endif
 
     std::cout << "=== Final pthread ANN path ===\n";
     std::cout << "selection criterion: minimize latency with recall@100 >= "
               << cfg.target_recall << "\n";
-    std::cout << "method: HNSW StdAsync M=" << best_m
+    std::cout << "method: " << best_method << " M=" << best_m
               << " efConstruction=" << best_ef_construction
               << " ef=" << best_ef
               << " threads=" << best_threads << "\n";
@@ -544,15 +550,20 @@ int run_final(const BenchmarkConfig& cfg, const BenchmarkData& data) {
     double build_sec = (now_us() - build_t0) / 1000000.0;
 
     double lat = 0.0, rec = 0.0;
+#if defined(__aarch64__) || defined(__ARM_NEON) || defined(__ARM_NEON__)
+    hnsw_query_stdthread(hnsw, data.query, data.gt, nq, data.dim, kRecallAt,
+                         data.gt_dim, best_ef, best_threads, lat, rec);
+#else
     hnsw_query_async(hnsw, data.query, data.gt, nq, data.dim, kRecallAt,
                      data.gt_dim, best_ef, best_threads, lat, rec);
+#endif
 
     ensure_dir("files");
     ensure_dir("files/results");
     std::ofstream fout("files/results/pthread_final.csv");
     fout << "criterion,method,nthreads,param1,param2,latency_us,recall@100,build_sec,index_mb,notes\n";
     fout << "min latency with recall@100>=" << cfg.target_recall
-         << ",HNSW-StdAsync," << best_threads << ",ef," << best_ef << ","
+         << "," << best_method << "," << best_threads << ",ef," << best_ef << ","
          << std::fixed << std::setprecision(6) << lat * 1000.0 << ","
          << rec << "," << build_sec << ",0.000000,"
          << "M=" << best_m << "; ef_construction=" << best_ef_construction << "\n";

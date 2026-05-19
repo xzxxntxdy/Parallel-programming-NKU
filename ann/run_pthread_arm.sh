@@ -67,11 +67,11 @@ if [[ "${ADVANCED_MODE}" -eq 1 ]]; then
     exit 0
 fi
 
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import matplotlib' >/dev/null 2>&1; then
     echo "=== [3/4] Plot figures ==="
     python3 plot_pthread.py
 else
-    echo "=== [3/4] Plot figures skipped: python3 not found ==="
+    echo "=== [3/4] Plot figures skipped: python3/matplotlib not available ==="
 fi
 
 echo "=== [4/4] ARM final selected configuration ==="
