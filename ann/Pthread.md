@@ -178,11 +178,3 @@ Algorithm 1 Greedy search(graph G, query q, entry point ep, ef)
 上述的优化很可能导致负优化，同学们只要如实汇报实验结果并给出一定分析即可。
 
 [^2]: 感兴趣的同学可以阅读论文 *iQAN: Fast and Accurate Vector Search with Efficient Intra-Query Parallelism on Multi-Core Architectures*，但由于论文难度较大，这里并不要求同学们复现该论文，如果阅读后理解了该论文可以尝试把论文中的一些方法用到自己的并行实现中。
-
-# 进阶要求
-不同平台（x86 或 ARM）上多线程（结合 SIMD）并行化的对比实验及性能分析；
-OpenMP 卸载到加速器设备；
-与其他编程工具如 oneAPI（SYCL）、C++ 语言标准中的多线程编程进行对比实验和性能分析；
-其他算法优化策略；
-利用生成式 AI（大语言模型）技术辅助多线程（结合 SIMD）编程的学习，将与大模型的对话记录作为报告附录提交；
-其他自由发挥。

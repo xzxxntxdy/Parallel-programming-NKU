@@ -130,6 +130,78 @@ recall@100: 0.954280
 
 这说明 ARM/Kunpeng 上最终提交路径应使用 HNSW 单图 query-level parallel 的 `std::thread` 版本，而不是沿用 x86 Windows 的 `std::async / threads=32`。
 
+### 2.4 ARM 仍需补跑：OpenMP CPU 基础实验
+
+根据 `要求.md` 和 `openmp.md`，基础要求需要同时覆盖 Pthread 与基础 OpenMP CPU 并行化。x86 Windows 已经补齐 OpenMP host CPU sweep：
+
+```text
+files/results/pthread_openmp_cpu_results_x86_windows.csv
+files/results/pthread_openmp_cpu_best_x86_windows.csv
+```
+
+x86 当前 OpenMP CPU 最优结果：
+
+```text
+experiment: OpenMP-CPU-IVF
+method: nl512-dynamic
+nthreads: 32
+param: nprobe=32
+latency: 0.082060 ms/query
+recall@100: 0.956950
+```
+
+ARM/Kunpeng 还需要补跑同一 OpenMP CPU host sweep，用于完成 Pthread/OpenMP 的双平台对比。默认仍使用 quick 规模：
+
+```bash
+cd /home/s2412235/ann
+ANN_DATA=/anndata bash run_pthread_openmp_cpu.sh --arm-quick
+```
+
+预期输出：
+
+```text
+files/results/pthread_openmp_cpu_results_arm.csv
+files/results/pthread_openmp_cpu_best_arm.csv
+files/results/pthread_openmp_cpu_arm.log
+```
+
+该实验覆盖 `OpenMP-CPU-Flat`、`OpenMP-CPU-FlatBaseSplit`、`OpenMP-CPU-PQ-ADC`、`OpenMP-CPU-IVF`，并比较 static/dynamic schedule。这里是 host CPU OpenMP，不是 OpenMP target。OpenMP target 加速器卸载已经在本地 x86 Intel GPU 上完成；Kunpeng 节点如果没有可用 accelerator 和 offload compiler，不要求补 target。
+
+### 2.5 ARM 仍需补跑：Pthread/OpenMP profiling
+
+SIMD 阶段已经在 ARM 上用 `perf stat` 做过 cycles、instructions、cache miss 等 profiling。Pthread/OpenMP 阶段本地 x86 已生成阶段耗时汇总：
+
+```text
+files/results/pthread_profile_summary.csv
+files/results/pthread_profile_simd_perf_context.csv
+```
+
+ARM/Kunpeng 若允许直接运行二进制并使用 `perf`，建议补以下 profiling。先编译：
+
+```bash
+cd /home/s2412235/ann
+g++ main.cc -o main -O2 -mcpu=native -fopenmp -lpthread -std=c++11 -I.
+g++ pthread_openmp_host.cc -o openmp_cpu -O2 -mcpu=native -fopenmp -lpthread -std=c++11 -I.
+```
+
+Pthread final/HNSW profiling：
+
+```bash
+perf stat -x, -o files/results/pthread_perf_hnsw_arm.csv \
+  -e cycles,instructions,branch-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
+  ./main --final-only --arm-quick --data /anndata --nq 300 --train 2048 --iters 8
+```
+
+OpenMP CPU profiling：
+
+```bash
+perf stat -x, -o files/results/openmp_cpu_perf_arm.csv \
+  -e cycles,instructions,branch-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
+  ./openmp_cpu --benchmark --arm-quick --data /anndata --nq 300 --train 2048 --iters 8
+```
+
+若课程环境不允许直接运行或 `perf_event_paranoid` 限制过高，则保留脚本输出的阶段耗时 CSV 即可，并在报告中说明硬件计数器不可用。
+
 ## 3. 最终默认路径
 
 已修改 `main.cc` 的 `run_final`：
@@ -207,8 +279,11 @@ files/results/pthread_hnsw_results_arm.csv
 files/results/pthread_hnsw_best_arm.csv
 files/results/pthread_global_best_arm.csv
 files/results/pthread_final_arm.csv
+files/results/pthread_openmp_cpu_results_arm.csv   # 待补
+files/results/pthread_openmp_cpu_best_arm.csv      # 待补
 files/results/pthread_arm_benchmark.log
 files/results/pthread_hnsw_arm.log
+files/results/pthread_openmp_cpu_arm.log           # 待补
 files/results/pthread_test_full_arm.o.log
 files/results/pthread_test_full_arm.e.log
 ```
@@ -222,10 +297,14 @@ files/results/pthread_final_x86_windows.csv
 files/results/pthread_hnsw_results_x86_windows.csv
 files/results/pthread_hnsw_best_x86_windows.csv
 files/results/pthread_global_best_x86_windows.csv
+files/results/pthread_openmp_cpu_results_x86_windows.csv
+files/results/pthread_openmp_cpu_best_x86_windows.csv
 files/results/pthread_sycl_o2_2024_results_x86_windows.csv
 files/results/pthread_sycl_o2_2024_best_x86_windows.csv
 files/results/pthread_openmp_target_device_results_x86_windows.csv
 files/results/pthread_openmp_target_device_best_x86_windows.csv
+files/results/pthread_profile_summary.csv
+files/results/pthread_profile_simd_perf_context.csv
 ```
 
 ## 6. 复现顺序
@@ -241,7 +320,10 @@ ANN_DATA=/anndata bash run_pthread_arm.sh --quick
 # 2. ARM HNSW / 图索引 quick sweep
 ANN_DATA=/anndata bash run_pthread_arm.sh --quick --hnsw-only
 
-# 3. 正式最终全量 bench
+# 3. ARM OpenMP CPU quick sweep
+ANN_DATA=/anndata bash run_pthread_openmp_cpu.sh --arm-quick
+
+# 4. 正式最终全量 bench
 bash test.sh 2 1
 ```
 
@@ -253,5 +335,5 @@ bash test.sh 2 1
 - HNSW 在 ARM 上的最优工具是 `std::thread`，quick 中 `StdThread ef=64 threads=16` 优于 `StdAsync` 的候选。
 - 最终 `test.sh` 全量结果达到 `recall@100=0.952643`，满足 `0.95` 目标，平均查询延迟为 `70.878600 us/query`。
 - HNSW 的 query-level parallel 是本阶段 ARM 最终代表实现；Layer0 多入口、边划分、点划分和 IVF-HNSW 已进入 CSV，可在报告中作为图索引查询内并行探索和负优化分析材料。
-- `run_pthread_arm.sh` 的 quick sweep 负责实验矩阵和选型；正式可提交结果以 `test.sh` 输出为准。
+- `run_pthread_arm.sh` 的 quick sweep 负责 Pthread 实验矩阵和选型；`run_pthread_openmp_cpu.sh --arm-quick` 负责 OpenMP CPU 对比；正式可提交结果以 `test.sh` 输出为准。
 

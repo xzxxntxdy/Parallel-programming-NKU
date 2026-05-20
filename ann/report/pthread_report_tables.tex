@@ -1,0 +1,68 @@
+\begin{table}[H]\centering\small
+\caption{核心实验 CSV 与约束最优结果}
+\label{tab:core_csv}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrlll}
+\toprule
+实验 & CSV & 行数 & 最优配置 & latency & recall@100 \\
+\midrule
+x86 主 CPU & pthread\_results\_x86\_windows.csv & 798 & IVF/nl512 nprobe=32 & 0.044471 ms & 0.956950 \\
+x86 HNSW & pthread\_hnsw\_results\_x86\_windows.csv & 84 & HNSW-ToolCompare/StdAsync ef=64 & 0.009739 ms & 0.954540 \\
+ARM 主 CPU & pthread\_results\_arm.csv & 864 & IVF/nl512 nprobe=32 & 0.193230 ms & 0.956240 \\
+ARM HNSW & pthread\_hnsw\_results\_arm.csv & 84 & HNSW-ToolCompare/StdThread ef=64 & 0.085378 ms & 0.954280 \\
+OpenMP target & pthread\_openmp\_target\_device\_results\_x86\_windows.csv & 36 & OpenMP-Target-IVF/LevelZero-IVF-nl2048-cap3840 nprobe=81 & 0.186502 ms & 0.950170 \\
+oneAPI/SYCL & pthread\_sycl\_o2\_2024\_results\_x86\_windows.csv & 6 & SYCL-IVF/IntelOpenCLGPU-BatchedUSM-IVF-nl2048 nprobe=80 & 0.215992 ms & 0.950600 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+
+\begin{table}[H]\centering\small
+\caption{最终提交路径 test.sh/默认 main 结果}
+\label{tab:final_path}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llllrrr}
+\toprule
+平台 & 方法 & 线程 & 参数 & latency(us) & recall@100 & build(s) \\
+\midrule
+x86 Windows & HNSW-StdAsync & 32 & ef=64 & 9.316 & 0.952683 & 6.239 \\
+ARM Kunpeng & HNSW-StdThread & 16 & ef=64 & 70.879 & 0.952643 & 43.452 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+
+\begin{table}[H]\centering\small
+\caption{x86 主 sweep 中各算法族最优可行点}
+\label{tab:x86_family_best}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llllrr}
+\toprule
+算法族 & experiment & method & 参数 & latency(ms) & recall@100 \\
+\midrule
+IVF/IVF-PQ & IVF & nl512 & nprobe=32 & 0.044471 & 0.956950 \\
+PQ/SDC/FastScan & FastScan & b64 & p=750 & 0.081048 & 0.981710 \\
+Scaling & Scaling & FastScan-b64-p500 & threads=32 & 0.087171 & 0.952830 \\
+Flat & Flat-Ablation & SSE & method=0 & 0.130451 & 1.000000 \\
+SQ8 & SQ8 & SQ8-LUT & p=50 & 0.296953 & 0.989540 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+
+\begin{table}[H]\centering\small
+\caption{ARM quick 主 sweep 中各算法族最优可行点}
+\label{tab:arm_family_best}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llllrr}
+\toprule
+算法族 & experiment & method & 参数 & latency(ms) & recall@100 \\
+\midrule
+IVF/IVF-PQ & IVF & nl512 & nprobe=32 & 0.193230 & 0.956240 \\
+PQ/SDC/FastScan & FastScan & b128 & p=500 & 0.298396 & 0.952520 \\
+Scaling & Scaling & FastScan-b64-p500 & threads=32 & 0.304762 & 0.952520 \\
+Flat & Flat-BaseSplit & PrefetchTopK & local\_p=100 & 0.717344 & 1.000000 \\
+SQ8 & SQ8 & SQ8-LUT & p=200 & 2.308882 & 1.000000 \\
+\bottomrule
+\end{tabular}}
+\end{table}

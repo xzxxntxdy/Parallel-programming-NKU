@@ -36,6 +36,30 @@ Expected platform-specific copies:
 - `files/results/pthread_hnsw_best_arm.csv`
 - `files/results/pthread_hnsw_arm.log`
 
+## ARM Quick OpenMP CPU Sweep
+
+This is the host-side OpenMP CPU experiment required by the basic OpenMP part.
+It is separate from OpenMP target device offload.
+
+```bash
+cd ann
+ANN_DATA=/home/$USER/anndata \
+bash run_pthread_openmp_cpu.sh --arm-quick
+```
+
+Expected platform-specific copies:
+
+- `files/results/pthread_openmp_cpu_results_arm.csv`
+- `files/results/pthread_openmp_cpu_best_arm.csv`
+- `files/results/pthread_openmp_cpu_arm.log`
+
+Covered methods:
+
+- `OpenMP-CPU-Flat`: query-level static/dynamic schedule.
+- `OpenMP-CPU-FlatBaseSplit`: base partition plus local top-p reduce.
+- `OpenMP-CPU-PQ-ADC`: M16 ADC with thread-local LUT.
+- `OpenMP-CPU-IVF`: nl512 IVF with static/dynamic schedule.
+
 ## Combined ARM Quick Sweep With Optional HNSW Baseline
 
 ```bash
@@ -106,3 +130,21 @@ scp user@ARM_HOST:/path/to/ann/files/results/pthread_*_arm*.log ./ann/files/resu
 
 After copying, rerun the report-side comparison scripts or regenerate tables
 from the ARM-suffixed CSV files.
+
+## Optional ARM Perf Profiling
+
+Run only if the ARM node allows direct binary execution and `perf stat`.
+
+```bash
+cd ann
+g++ main.cc -o main -O2 -mcpu=native -fopenmp -lpthread -std=c++11 -I.
+g++ pthread_openmp_host.cc -o openmp_cpu -O2 -mcpu=native -fopenmp -lpthread -std=c++11 -I.
+
+perf stat -x, -o files/results/pthread_perf_hnsw_arm.csv \
+  -e cycles,instructions,branch-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
+  ./main --final-only --arm-quick --data /home/$USER/anndata --nq 300 --train 2048 --iters 8
+
+perf stat -x, -o files/results/openmp_cpu_perf_arm.csv \
+  -e cycles,instructions,branch-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
+  ./openmp_cpu --benchmark --arm-quick --data /home/$USER/anndata --nq 300 --train 2048 --iters 8
+```

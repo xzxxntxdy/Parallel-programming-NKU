@@ -205,6 +205,65 @@ the project-local DPC++ 2024.2.1 conda environment.
 SYCL and OpenMP target accelerator records are kept separate from the Pthread
 CPU sweep.
 
+## Host OpenMP CPU Commands
+
+The basic OpenMP CPU requirement is covered by a separate host-side OpenMP
+benchmark, not by the OpenMP target device result.  This path uses `#pragma omp`
+query-level and base-split loops, compares `static` and `dynamic` scheduling,
+and writes isolated CSV files:
+
+```powershell
+cd D:\Parallel-programming-NKU\ann
+.\run_pthread_openmp_cpu.ps1 -Data D:/Parallel-programming-NKU/anndata `
+    -Nq 1000 -Train 4096 -Iters 12
+```
+
+Outputs:
+
+- `files/results/pthread_openmp_cpu_results_x86_windows.csv`
+- `files/results/pthread_openmp_cpu_best_x86_windows.csv`
+- `files/results/pthread_openmp_cpu_x86_windows.log`
+
+Latest x86 OpenMP CPU best:
+
+```text
+OpenMP-CPU-IVF / nl512-dynamic / nprobe=32 / threads=32
+latency=0.082060 ms/query, recall@100=0.956950
+```
+
+ARM/Kunpeng quick command:
+
+```bash
+cd ann
+ANN_DATA=/anndata bash run_pthread_openmp_cpu.sh --arm-quick
+```
+
+Expected ARM outputs:
+
+- `files/results/pthread_openmp_cpu_results_arm.csv`
+- `files/results/pthread_openmp_cpu_best_arm.csv`
+- `files/results/pthread_openmp_cpu_arm.log`
+
+## Profiling Summary
+
+SIMD-stage hardware-counter profiling is kept under `simd/files/results`.  The
+Pthread/OpenMP stage now has a lightweight stage-timing summary that follows the
+same analysis style and can be regenerated after new ARM results are copied
+back:
+
+```powershell
+cd D:\Parallel-programming-NKU\ann
+python summarize_pthread_profile.py
+```
+
+Outputs:
+
+- `files/results/pthread_profile_summary.csv`
+- `files/results/pthread_profile_simd_perf_context.csv`
+
+On ARM/Kunpeng, optional perf-counter profiling commands are listed in
+`PTHREAD_ARM_COMMANDS.md`.
+
 ## Experiment Matrix
 
 The benchmark mode records recall@100, normalized latency per query, speedup
@@ -224,6 +283,8 @@ Main sweeps:
 - IVF-PQ: IVF candidate pruning plus global PQ rerank.
 - Optional HNSW: enable with `--with-hnsw`.
 - Advanced-only HNSW: `--hnsw-only`, which writes separate HNSW CSV files.
+- Host OpenMP CPU: Flat query-level/base-split, PQ-ADC, IVF, static/dynamic
+  schedule comparison in `pthread_openmp_host.cc`.
 - Optional OpenMP target offload and oneAPI/SYCL flat-search probes in
   `pthread_openmp_target_ivf.cc` and `pthread_sycl_flat.cc`.
 - Optional CUDA exact flat-search probe in `pthread_cuda_flat.cu`, retained but

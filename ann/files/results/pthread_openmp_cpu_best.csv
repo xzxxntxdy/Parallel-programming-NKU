@@ -1,0 +1,2 @@
+criterion,experiment,method,nthreads,param1,param2,latency_ms,recall@100,speedup,index_mb,build_sec,notes
+min latency with recall@100>=0.95,OpenMP-CPU-IVF,nl512-dynamic,32,nprobe,32,0.082060,0.956950,58.353595,0.000000,21.309354,host_openmp_query_parallel; coarse_plus_fine_scan
