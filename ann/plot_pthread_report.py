@@ -393,6 +393,7 @@ def fig_openmp_heatmap(data):
 def fig_stage_breakdown(data):
     rows = []
     labels = []
+    configs = []
     candidates = [
         ("OpenMP target IVF", best_under(data["openmp"])),
         ("SYCL IVF", best_under(data["sycl"])),
@@ -405,20 +406,25 @@ def fig_stage_breakdown(data):
             value = pd.to_numeric(pd.Series([r.get(name, 0.0)]), errors="coerce").iloc[0]
             return 0.0 if pd.isna(value) else float(value)
 
+        select_us = stage_value("select_us")
+        rerank_us = stage_value("rerank_us")
         rows.append([
             stage_value("encode_us"),
             stage_value("lut_us"),
             stage_value("scan_us"),
-            stage_value("select_us"),
-            stage_value("rerank_us"),
+            select_us + rerank_us,
         ])
+        nprobe = int(float(r.get("param2", 0))) if pd.notna(r.get("param2", np.nan)) else 0
+        recall = float(r.get("recall@100", 0.0))
+        latency = float(r.get("latency_ms", 0.0))
+        configs.append(f"nprobe={nprobe}, recall={recall:.4f}, latency={latency:.3f} ms")
     if not rows:
         return
     arr = np.array(rows)
-    fig, ax = plt.subplots(figsize=(7.4, 4.5))
+    fig, ax = plt.subplots(figsize=(7.4, 4.2))
     left = np.zeros(arr.shape[0])
-    names = ["coarse/encode", "fill/LUT", "scan", "select", "rerank"]
-    colors = ["#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"]
+    names = ["coarse/encode", "fill/LUT", "device scan", "final top-k/rerank"]
+    colors = ["#264653", "#2a9d8f", "#e9c46a", "#e76f51"]
     y = np.arange(len(labels))
     for i, name in enumerate(names):
         ax.barh(y, arr[:, i], left=left, label=name, color=colors[i], edgecolor="white", linewidth=0.6)
@@ -441,11 +447,14 @@ def fig_stage_breakdown(data):
                     "; ".join(notes),
                     va="center", fontsize=7, color="#444444")
     ax.set_yticks(y)
-    ax.set_yticklabels(labels)
+    ax.set_yticklabels([f"{label}\n{config}" for label, config in zip(labels, configs)])
     ax.invert_yaxis()
     ax.set_xlabel("Time per query (us)")
     ax.set_title("Accelerator Path Timing Breakdown")
-    ax.legend(frameon=True, ncol=3, loc="lower right")
+    ax.legend(frameon=True, ncol=2, loc="lower right")
+    ax.text(0.01, -0.26,
+            "GPU IVF computes exact candidate distances; the post-scan top-k stage is the rerank-equivalent step.",
+            transform=ax.transAxes, fontsize=7.2, color="#555555")
     ax.set_xlim(0, max(left) * 1.28)
     savefig("fig_pthread_report_09_accel_breakdown")
 

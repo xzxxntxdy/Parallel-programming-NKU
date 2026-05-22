@@ -655,15 +655,15 @@ OpenMP target 实验严格卸载到 Intel GPU 加速器设备，运行时设置 
 
 从实现角度看，OpenMP target 路径的关键修改有三点。第一，倒排链不使用 CPU 侧的指针结构，而是改为 \code{offsets + ids + vectors} 的扁平数组，便于设备端按 offset 定位候选区间。第二，kernel 内部避免动态分配和复杂 STL 容器，每个并行迭代只做一次连续向量点积并写回距离，保证设备端代码可被普通 \code{-O2} 编译。第三，candidate cap 既是算法参数，也是设备端工作量和回传距离矩阵的上界，可以防止少数超长倒排链拖慢整个 batch。
 
-这一实现把 OpenMP target 的收益和代价都显式暴露出来。设备端扫描时间对应 \code{target teams distribute parallel for} 的实际工作，candidate 填充时间反映 host 侧根据倒排链构造固定形状候选矩阵的成本，selection 时间反映回到 host 后维护 top-100 的成本。图 \ref{fig:accel_breakdown} 中可以看到，GPU 路径并不是单一 kernel 时间，而是由 candidate 组织、设备扫描、距离回传和 top-k 选择共同决定。后续优化空间也很明确：若要进一步提升 OpenMP target，需要把 block-level top-k 或 partial selection 下沉到设备端，减少回传距离矩阵规模。
+这一实现把 OpenMP target 的收益和代价都显式暴露出来。设备端扫描时间对应 \code{target teams distribute parallel for} 的实际工作，candidate 填充时间反映 host 侧根据倒排链构造固定形状候选矩阵的成本，final top-k/rerank 时间反映回到 host 后根据精确候选距离维护 top-100 的成本。由于设备端已经对候选原始向量计算精确距离，这一路径没有额外的二次原向量 rerank kernel；报告中把 post-scan top-k 作为 rerank-equivalent 阶段汇报。图 \ref{fig:accel_breakdown} 中可以看到，GPU 路径并不是单一 kernel 时间，而是由 candidate 组织、设备扫描、距离回传和最终重排共同决定。后续优化空间也很明确：若要进一步提升 OpenMP target，需要把 block-level top-k 或 partial selection 下沉到设备端，减少回传距离矩阵规模。
 
 \subsection{与 oneAPI/SYCL 的比较}
 
-oneAPI/SYCL 路径采用相近的 Intel GPU batch IVF 思路。补齐 host coarse selection 与候选填充计时后，正式 O2 结果中 SYCL 最优为 \code{nprobe=84}，延迟 0.210546 ms/query，\code{recall@100=0.952790}。它略慢于 OpenMP target 最优点，但两者的瓶颈一致：候选 scan 是主要耗时；SYCL 的 host coarse selection 约为 27.471 $\mu$s/query，candidate fill 与 query layout 约为 0.075 $\mu$s/query，说明该路径的额外主机侧开销主要来自质心选择，而不是候选矩阵填充。
+oneAPI/SYCL 路径采用相近的 Intel GPU batch IVF 思路。补齐 host coarse selection 与候选填充计时后，正式 O2 结果中 SYCL 最优为 \code{nprobe=84}，延迟 0.210546 ms/query，\code{recall@100=0.952790}。它略慢于 OpenMP target 最优点，但两者的瓶颈一致：候选 scan 是主要耗时；SYCL 的 host coarse selection 约为 27.471 $\mu$s/query，candidate fill 与 query layout 约为 0.075 $\mu$s/query，final top-k/rerank 为 4.622 $\mu$s/query，说明该路径的额外主机侧开销主要来自质心选择和设备扫描，而不是候选矩阵填充。
 
-\reportfig{fig_pthread_report_09_accel_breakdown}{OpenMP target 与 oneAPI/SYCL 的阶段耗时分解。GPU 路径的主要开销集中在候选扫描和选择。}{fig:accel_breakdown}
+\reportfig{fig_pthread_report_09_accel_breakdown}{OpenMP target 与 oneAPI/SYCL 的阶段耗时分解。GPU IVF 已在设备端计算候选精确距离，因此图中 final top-k/rerank 表示扫描后的最终重排阶段。}{fig:accel_breakdown}
 
-GPU 结果说明，batch IVF 的设备端距离扫描已经具备可观吞吐，但端到端延迟仍高于 x86 CPU HNSW。原因有四点。第一，HNSW 在算法层面访问的节点数量远少于 IVF candidate cap 下的候选矩阵，GPU 扫描再快也仍要处理更多候选。第二，GPU kernel 只覆盖候选距离计算，coarse quantizer、candidate 填充、距离矩阵回传和最终 top-100 selection 仍在 host 侧参与端到端时间。第三，IVF 倒排链长度不均，candidate cap 为了保持规则矩阵形状会引入无效槽和截断权衡，增加了对参数的敏感性。第四，Intel 集显与 CPU 共享内存层次和功耗预算，适合规则 batch scan，但不具备足以抵消 HNSW 图剪枝优势的候选吞吐差距。因此，GPU 路径的主要瓶颈不是单次距离计算，而是候选规模、host-device 协作和 top-k 位置仍偏 host 端。
+GPU 结果说明，batch IVF 的设备端距离扫描已经具备可观吞吐，但端到端延迟仍高于 x86 CPU HNSW。原因有四点。第一，HNSW 在算法层面访问的节点数量远少于 IVF candidate cap 下的候选矩阵，GPU 扫描再快也仍要处理更多候选。第二，GPU kernel 只覆盖候选距离计算，coarse quantizer、candidate 填充、距离矩阵回传和最终 top-100 重排仍在 host 侧参与端到端时间。第三，IVF 倒排链长度不均，candidate cap 为了保持规则矩阵形状会引入无效槽和截断权衡，增加了对参数的敏感性。第四，Intel 集显与 CPU 共享内存层次和功耗预算，适合规则 batch scan，但不具备足以抵消 HNSW 图剪枝优势的候选吞吐差距。因此，GPU 路径的主要瓶颈不是单次距离计算，而是候选规模、host-device 协作和 top-k 位置仍偏 host 端。
 
 \begin{table}[H]\centering\scriptsize
 \caption{Intel GPU 上 IVF 加速器路径对比}
@@ -774,7 +774,7 @@ Intel GPU & OpenMP target IVF & 0.186502 ms & 0.950170 & 严格卸载到设备�
 
 \subsection{阶段耗时 profiling}
 
-为了把“更快”拆解为可解释的瓶颈，本文在 Pthread/OpenMP 阶段记录了候选编码、LUT 构建、候选 scan、top-k selection 和 rerank 的阶段耗时。并不是所有算法都有完整阶段拆分：IVF 与 HNSW 的部分记录只保留 wall time，因为它们的核心瓶颈来自索引遍历和候选访问；PQ/FastScan、OpenMP target 与 SYCL 则能更清晰地区分 scan 和 selection。
+为了把“更快”拆解为可解释的瓶颈，本文在 Pthread/OpenMP 阶段记录了候选编码、LUT 构建、候选 scan、top-k selection 和 rerank 的阶段耗时。并不是所有算法都有完整阶段拆分：IVF 与 HNSW 的部分记录只保留 wall time，因为它们的核心瓶颈来自索引遍历和候选访问；PQ/FastScan、OpenMP target 与 SYCL 则能更清晰地区分 scan 和最终 top-k/rerank。GPU IVF 的距离矩阵已经来自原始向量精确距离，因而不存在额外二次精排 kernel，表中的 select/rerank 指扫描后的最终 top-k 重排。
 
 profiling 分成两层。第一层是跨平台都能稳定记录的阶段计时，用 \code{std::chrono} 或设备事件把 encode/LUT/scan/select/rerank 拆开，直接回答“时间花在哪个阶段”。第二层是体系结构计数器，用 cycles、IPC、L1/LLC miss 等指标解释为什么某阶段难以继续扩展。Windows x86 侧重点在阶段计时和线程 sweep；ARM/Kunpeng 侧结合 SIMD 阶段的 perf counter 观察 cache 行为。两层信息不能互相替代：阶段计时能定位瓶颈阶段，硬件计数器能解释该阶段是算术、分支还是内存受限。
 
@@ -784,13 +784,13 @@ profiling 分成两层。第一层是跨平台都能稳定记录的阶段计时�
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{llllrrrrrrl}
 \toprule
-来源 & 实验 & 方法 & 参数 & latency(ms) & encode & LUT/fill & scan & select & 主导占比 & 结论 \\
+来源 & 实验 & 方法 & 参数 & latency(ms) & encode & LUT/fill & scan & select/rerank & 主导占比 & 结论 \\
 \midrule
 x86 Pthread & FastScan & \code{b64} & \code{p=750,t=32} & 0.081048 & 0.000 & 68.467 & 786.027 & 1050.545 & 51.2\% select & 查表后 top-k 选择成为瓶颈。 \\
 x86 Pthread & PQ-M & \code{M8} & \code{p=1500,t=32} & 0.084262 & 0.000 & 15.941 & 680.023 & 1015.001 & 51.5\% select & 候选多时 selection 压过 LUT 扫描。 \\
 x86 OpenMP CPU & PQ-ADC & \code{M16 dynamic} & \code{p=500,t=32} & 0.175798 & 0.000 & 157.307 & 1677.696 & 2140.931 & 51.2\% select & OpenMP host 仍受 top-k 维护限制。 \\
-x86 OpenMP target & IVF & \code{cap3840} & \code{nprobe=81} & 0.186502 & 27.519 & 3.831 & 128.732 & 19.206 & 71.8\% scan & 设备 scan 主导，host coarse 与 fill 已单独计时。 \\
-x86 SYCL & IVF & \code{nl2048} & \code{nprobe=84} & 0.210546 & 27.471 & 0.075 & 178.378 & 4.622 & 84.7\% scan & 补齐计时后仍是 scan-bound，fill 几乎可忽略。 \\
+x86 OpenMP target & IVF & \code{cap3840} & \code{nprobe=81} & 0.186502 & 27.519 & 3.831 & 128.732 & 19.206 & 71.8\% scan & 设备 scan 主导，最终重排仍在 host 端。 \\
+x86 SYCL & IVF & \code{nl2048} & \code{nprobe=84} & 0.210546 & 27.471 & 0.075 & 178.378 & 4.622 & 84.7\% scan & 补齐计时后仍是 scan-bound，最终重排较轻。 \\
 ARM Pthread & FastScan & \code{b128} & \code{p=500,t=32} & 0.298396 & 0.000 & 170.414 & 3845.236 & 2014.618 & 60.4\% scan & ARM 上 scan 与内存访问占比更高。 \\
 ARM Pthread & PQ-M & \code{M8} & \code{p=1500,t=32} & 0.314184 & 0.000 & 33.536 & 2665.096 & 3070.892 & 46.1\% select & selection 与 scan 接近，候选数仍是核心。 \\
 ARM OpenMP CPU & PQ-ADC & \code{M16 dynamic} & \code{p=1000,t=8} & 0.631290 & 0.000 & 32.043 & 3060.700 & 912.423 & 66.7\% scan & 线程较少时扫描阶段更主导。 \\
@@ -798,7 +798,7 @@ ARM OpenMP CPU & PQ-ADC & \code{M16 dynamic} & \code{p=1000,t=8} & 0.631290 & 0.
 \end{tabular}}
 \end{table}
 
-表 \ref{tab:profile_stage} 支持两个结论。第一，PQ/FastScan 把距离计算压缩后，top-k selection 立刻成为显著瓶颈。x86 FastScan 和 PQ-M 的主导阶段都是 selection，说明后续优化不能只继续微调 LUT 累加，还要减少候选数量或改进 partial top-k。第二，OpenMP target 与 SYCL 的主导阶段是设备 scan，说明 GPU 路径的当前瓶颈主要是规则候选距离矩阵，而不是 host 侧 selection。补齐 SYCL 的 host 侧计时后可以看到，它与 OpenMP target 一样存在约 27 $\mu$s/query 的 coarse selection 开销；差异在于 SYCL 的 batch candidate fill 被组织得更轻，而 device scan 更重。因此继续优化 GPU 路径时，应优先减少候选矩阵规模、改进设备端 partial top-k，并考虑把 coarse selection 或候选压缩进一步下沉到设备端。
+表 \ref{tab:profile_stage} 支持两个结论。第一，PQ/FastScan 把距离计算压缩后，top-k selection 立刻成为显著瓶颈。x86 FastScan 和 PQ-M 的主导阶段都是 selection，说明后续优化不能只继续微调 LUT 累加，还要减少候选数量或改进 partial top-k。第二，OpenMP target 与 SYCL 的主导阶段是设备 scan，说明 GPU 路径的当前瓶颈主要是规则候选距离矩阵，而不是 host 侧最终重排。补齐 SYCL 的 host 侧计时后可以看到，它与 OpenMP target 一样存在约 27 $\mu$s/query 的 coarse selection 开销；差异在于 SYCL 的 batch candidate fill 被组织得更轻，而 device scan 更重。由于 GPU IVF 已经返回精确候选距离，select/rerank 阶段的优化重点不是增加一次精排，而是减少回传矩阵规模、改进设备端 partial top-k，并考虑把 coarse selection 或候选压缩进一步下沉到设备端。
 
 \subsection{cache 与内存访问分析}
 
