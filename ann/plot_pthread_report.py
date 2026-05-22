@@ -391,9 +391,7 @@ def fig_openmp_heatmap(data):
 
 
 def fig_stage_breakdown(data):
-    rows = []
-    labels = []
-    configs = []
+    records = []
     candidates = [
         ("OpenMP target IVF", best_under(data["openmp"])),
         ("SYCL IVF", best_under(data["sycl"])),
@@ -401,61 +399,72 @@ def fig_stage_breakdown(data):
     for label, r in candidates:
         if r.empty:
             continue
-        labels.append(label)
         def stage_value(name):
             value = pd.to_numeric(pd.Series([r.get(name, 0.0)]), errors="coerce").iloc[0]
             return 0.0 if pd.isna(value) else float(value)
 
         select_us = stage_value("select_us")
         rerank_us = stage_value("rerank_us")
-        rows.append([
-            stage_value("encode_us"),
-            stage_value("lut_us"),
-            stage_value("scan_us"),
-            select_us + rerank_us,
-        ])
         nprobe = int(float(r.get("param2", 0))) if pd.notna(r.get("param2", np.nan)) else 0
         recall = float(r.get("recall@100", 0.0))
         latency = float(r.get("latency_ms", 0.0))
-        configs.append(f"nprobe={nprobe}, recall={recall:.4f}, latency={latency:.3f} ms")
-    if not rows:
+        for stage, value in [
+            ("coarse/encode", stage_value("encode_us")),
+            ("fill/LUT", stage_value("lut_us")),
+            ("device scan", stage_value("scan_us")),
+            ("final top-k/rerank", select_us + rerank_us),
+        ]:
+            records.append({
+                "path": label,
+                "stage": stage,
+                "time_us": value,
+                "nprobe": nprobe,
+                "recall": recall,
+                "latency_ms": latency,
+            })
+    if not records:
         return
-    arr = np.array(rows)
-    fig, ax = plt.subplots(figsize=(7.4, 4.2))
-    left = np.zeros(arr.shape[0])
-    names = ["coarse/encode", "fill/LUT", "device scan", "final top-k/rerank"]
-    colors = ["#264653", "#2a9d8f", "#e9c46a", "#e76f51"]
-    y = np.arange(len(labels))
-    for i, name in enumerate(names):
-        ax.barh(y, arr[:, i], left=left, label=name, color=colors[i], edgecolor="white", linewidth=0.6)
-        for j, value in enumerate(arr[:, i]):
-            if value >= 12.0:
-                ax.text(left[j] + value / 2, j, f"{value:.1f}", ha="center", va="center",
-                        fontsize=7, color="black")
-        left += arr[:, i]
-    for j, label in enumerate(labels):
-        zero_names = [names[i] for i, value in enumerate(arr[j]) if value == 0.0]
-        small_names = [f"{names[i]}={arr[j, i]:.2f}" for i, value in enumerate(arr[j])
-                       if 0.0 < value < 12.0]
-        notes = []
-        if small_names:
-            notes.append("small: " + ", ".join(small_names))
-        if zero_names:
-            notes.append("0 us: " + ", ".join(zero_names))
-        if notes:
-            ax.text(left[j] + max(left.max(), 1.0) * 0.02, j,
-                    "; ".join(notes),
-                    va="center", fontsize=7, color="#444444")
-    ax.set_yticks(y)
-    ax.set_yticklabels([f"{label}\n{config}" for label, config in zip(labels, configs)])
+    df = pd.DataFrame(records)
+    stages = ["coarse/encode", "fill/LUT", "device scan", "final top-k/rerank"]
+    paths = ["OpenMP target IVF", "SYCL IVF"]
+    colors = {"OpenMP target IVF": "#9467bd", "SYCL IVF": "#2ca02c"}
+    markers = {"OpenMP target IVF": "o", "SYCL IVF": "s"}
+    offsets = {"OpenMP target IVF": -0.08, "SYCL IVF": 0.08}
+    y_base = {stage: i for i, stage in enumerate(stages)}
+
+    fig, ax = plt.subplots(figsize=(7.4, 4.35))
+    pivot = df.pivot(index="stage", columns="path", values="time_us")
+    for stage in stages:
+        vals = [pivot.loc[stage, path] for path in paths if path in pivot.columns]
+        vals = [v for v in vals if pd.notna(v) and v > 0]
+        if len(vals) >= 2:
+            ax.plot(vals, [y_base[stage]] * len(vals), color="#bdbdbd", lw=1.2, zorder=1)
+
+    for path in paths:
+        g = df[df["path"] == path]
+        if g.empty:
+            continue
+        y = [y_base[stage] + offsets[path] for stage in g["stage"]]
+        ax.scatter(g["time_us"], y, s=58, marker=markers[path], color=colors[path],
+                   edgecolor="white", linewidth=0.7, zorder=3, label=path)
+        for _, r in g.iterrows():
+            value = float(r["time_us"])
+            label = f"{value:.3f}" if value < 1.0 else f"{value:.1f}"
+            ax.annotate(label, (value, y_base[r["stage"]] + offsets[path]),
+                        xytext=(5, 0), textcoords="offset points",
+                        va="center", ha="left", fontsize=7.3, color="#333333")
+
+    ax.set_yticks(np.arange(len(stages)))
+    ax.set_yticklabels(stages)
     ax.invert_yaxis()
-    ax.set_xlabel("Time per query (us)")
-    ax.set_title("Accelerator Path Timing Breakdown")
-    ax.legend(frameon=True, ncol=2, loc="lower right")
-    ax.text(0.01, -0.26,
-            "GPU IVF computes exact candidate distances; the post-scan top-k stage is the rerank-equivalent step.",
-            transform=ax.transAxes, fontsize=7.2, color="#555555")
-    ax.set_xlim(0, max(left) * 1.28)
+    ax.set_xscale("log")
+    ax.set_xlabel("Stage time per query (us, log scale)")
+    ax.set_title("Accelerator Path Stage Timing")
+    ax.grid(True, axis="x", which="both", alpha=0.24)
+    ax.grid(True, axis="y", which="major", alpha=0.18)
+    ax.legend(frameon=True, loc="lower right")
+    positive = df[df["time_us"] > 0]["time_us"]
+    ax.set_xlim(positive.min() * 0.55, positive.max() * 1.75)
     savefig("fig_pthread_report_09_accel_breakdown")
 
 

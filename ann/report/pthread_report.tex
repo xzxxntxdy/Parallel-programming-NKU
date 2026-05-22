@@ -363,7 +363,7 @@ FastScan 继续优化 PQ/SDC 的查表累加。核心思想是将 code 和 LUT �
 
 FastScan 的实现不再按“一个候选一段 code”的朴素布局扫描，而是按 block 重排多个候选的子空间 code。这样一个 SIMD register 可以同时处理多个候选的同一子空间查表结果。Pthread 层按 block 区间切分工作，每个线程处理完整 block，避免两个线程写同一个 block 的局部分数。该实现使查表路径更接近顺序访问，但也依赖候选数和 block size 的配合：block 太小无法充分利用 SIMD，block 太大则会增加缓存压力和局部 top-$p$ 的维护成本。
 
-\reportfigpair{fig_pthread_report_02_x86_family_best}{x86 算法族最优点}{fig_pthread_report_03_arm_family_best}{ARM/Kunpeng 算法族最优点}{x86 与 ARM/Kunpeng 平台各算法族在 \targetrecall{} 下的最优可行点。两张图使用同一评价口径，便于观察算法结构是否跨平台保持一致。}{fig:family_best_pair}{fig:x86_family}{fig:arm_family}
+\reportfigpair{fig_pthread_report_02_x86_family_best}{x86 算法族最优点}{fig_pthread_report_03_arm_family_best}{ARM/Kunpeng 算法族最优点}{x86 与 ARM/Kunpeng 平台各算法族在 \targetrecall{} 下的最优可行点。HNSW 与 IVF 在双平台上都保持较强的候选裁剪优势，Flat 与部分量化路径主要受候选规模和 selection 成本限制。}{fig:family_best_pair}{fig:x86_family}{fig:arm_family}
 
 从图 \ref{fig:family_best_pair} 的两个面板可以看到，FastScan 在两个平台上都明显快于精确 Flat，但没有超过 IVF 和 HNSW。原因是 FastScan 降低了单候选成本，却没有像 IVF/HNSW 那样大幅减少候选数量。它适合作为 SIMD 与 Pthread 结合的高质量消融，但不是最终最优路径。
 
@@ -649,7 +649,7 @@ OpenMP target 实验严格卸载到 Intel GPU 加速器设备，运行时设置 
 \end{algorithmic}
 \end{algorithm}
 
-\reportfig{fig_pthread_report_08_openmp_target_heatmap}{OpenMP target IVF 的 \code{nprobe} 与 candidate cap 调参热力图。白色圆圈为跨过目标 recall 线的可行点。}{fig:openmp_heatmap}
+\reportfig{fig_pthread_report_08_openmp_target_heatmap}{OpenMP target IVF 的 \code{nprobe} 与 candidate cap 调参热力图，记录 latency 与可行点分布。}{fig:openmp_heatmap}
 
 最优 OpenMP target 配置为 \code{nprobe=81, candidate cap=3840}，延迟 0.186502 ms/query，\code{recall@100=0.950170}。这个点非常接近目标线，说明优化方向已经从“让 GPU 跑起来”转为“减少不必要候选扫描”。
 
@@ -661,7 +661,7 @@ OpenMP target 实验严格卸载到 Intel GPU 加速器设备，运行时设置 
 
 oneAPI/SYCL 路径采用相近的 Intel GPU batch IVF 思路。补齐 host coarse selection 与候选填充计时后，正式 O2 结果中 SYCL 最优为 \code{nprobe=84}，延迟 0.210546 ms/query，\code{recall@100=0.952790}。它略慢于 OpenMP target 最优点，但两者的瓶颈一致：候选 scan 是主要耗时；SYCL 的 host coarse selection 约为 27.471 $\mu$s/query，candidate fill 与 query layout 约为 0.075 $\mu$s/query，final top-k/rerank 为 4.622 $\mu$s/query，说明该路径的额外主机侧开销主要来自质心选择和设备扫描，而不是候选矩阵填充。
 
-\reportfig{fig_pthread_report_09_accel_breakdown}{OpenMP target 与 oneAPI/SYCL 的阶段耗时分解。GPU IVF 已在设备端计算候选精确距离，因此图中 final top-k/rerank 表示扫描后的最终重排阶段。}{fig:accel_breakdown}
+\reportfig{fig_pthread_report_09_accel_breakdown}{OpenMP target 与 oneAPI/SYCL 的阶段耗时分解。GPU IVF 已在设备端计算候选精确距离，final top-k/rerank 表示扫描后的最终重排阶段。}{fig:accel_breakdown}
 
 GPU 结果说明，batch IVF 的设备端距离扫描已经具备可观吞吐，但端到端延迟仍高于 x86 CPU HNSW。原因有四点。第一，HNSW 在算法层面访问的节点数量远少于 IVF candidate cap 下的候选矩阵，GPU 扫描再快也仍要处理更多候选。第二，GPU kernel 只覆盖候选距离计算，coarse quantizer、candidate 填充、距离矩阵回传和最终 top-100 重排仍在 host 侧参与端到端时间。第三，IVF 倒排链长度不均，candidate cap 为了保持规则矩阵形状会引入无效槽和截断权衡，增加了对参数的敏感性。第四，Intel 集显与 CPU 共享内存层次和功耗预算，适合规则 batch scan，但不具备足以抵消 HNSW 图剪枝优势的候选吞吐差距。因此，GPU 路径的主要瓶颈不是单次距离计算，而是候选规模、host-device 协作和 top-k 位置仍偏 host 端。
 
@@ -893,7 +893,7 @@ Intel 集显适合规则 batch 扫描，但 HNSW 的图搜索依赖和随机分�
 
 结果选择流程也被固定为脚本化步骤。每次 sweep 都输出完整 CSV，字段至少包含 \code{experiment}、\code{method}、\code{nthreads}、核心参数、\code{latency\_ms}、\code{recall@100}、\code{build\_sec} 和 notes。随后脚本先过滤 \targetrecall{}，再按 latency 升序选择最优点。这个流程避免把 recall 不达标的低延迟点误判为有效优化，也避免把 recall 远高于目标但延迟更大的配置误选为最终路径。HNSW 查询内并行和 GPU candidate cap 调参都使用同一规则，因此负优化结果也能被客观保留和解释。
 
-跨平台部分采用“本地完整、ARM quick、最终全量验证”的策略。x86 本地环境可以完整运行 1000 query sweep，因此承担主要消融和绘图；ARM/Kunpeng 默认 quick 模式，用较小 query 数筛选参数，再由 \code{test.sh} 跑全量最终路径。这样既符合 ARM 远端环境的运行约束，也避免把 quick 结果误当最终全量结果。OpenMP CPU 在 ARM 上同样保留 quick 结果，用来和 Pthread 的同平台结果对照；OpenMP target 则集中在本地 Intel GPU 上分析设备端 batch IVF。
+跨平台部分采用“本地完整、ARM quick、最终全量验证”的策略。x86 本地环境可以完整运行 1000 query sweep，因此承担主要消融、OpenMP target 与 SYCL 实验；ARM/Kunpeng 默认 quick 模式，用较小 query 数筛选参数，再由 \code{test.sh} 跑全量最终路径。这样既符合 ARM 远端环境的运行约束，也避免把 quick 结果误当最终全量结果。OpenMP CPU 在 ARM 上同样保留 quick 结果，用来和 Pthread 的同平台结果对照；OpenMP target 则集中在本地 Intel GPU 上分析设备端 batch IVF。
 
 并发实现上，线程私有状态是最重要的边界。Flat base-split、PQ-ADC、FastScan、IVF 和 HNSW 都避免多个线程共享 top-k heap、LUT、visited 标记或局部候选数组。共享数据只读，包括 base 向量、PQ codebook、倒排链、HNSW 图结构和 ground truth；写入数据按 query id 或线程 id 分区。这个约束让并行一致性更容易检查，也降低了 false sharing 和锁竞争。对于 OpenMP target，代码进一步避免设备端 STL、动态分配和复杂队列，把 kernel 限制为固定形状的 batch candidate scan，便于普通 \code{-O2} 编译和稳定复现。
 
@@ -907,7 +907,7 @@ Intel 集显适合规则 batch 扫描，但 HNSW 的图搜索依赖和随机分�
 
 第三个检查是平台相关参数不硬编码为同一组。x86 的最终线程数为 32，ARM/Kunpeng 的最终线程数为 16；OpenMP CPU 在 x86 上选择 32 线程，在 ARM quick 中选择 8 线程。这些选择来自各自平台的 sweep，而不是强行套用同一参数。这样做符合多线程实验的真实情况：算法结构可以迁移，但线程数、调度工具和运行时开销会随硬件、操作系统和编译器变化。
 
-ARM 迁移命令保留 quick 模式，是为了降低远端平台排队和运行时间的不确定性。quick sweep 用于发现可行参数，最终性能仍由 \code{test.sh} 全量验证。在结果解释中，quick 结果用于消融分析，全量结果用于最终性能对比；二者不混用。x86 本地环境则用于补足大规模消融、OpenMP target、SYCL 和绘图，因为这些实验依赖本机 Intel GPU 与 oneAPI 编译环境。
+ARM 迁移命令保留 quick 模式，是为了降低远端平台排队和运行时间的不确定性。quick sweep 用于发现可行参数，最终性能仍由 \code{test.sh} 全量验证。在结果解释中，quick 结果用于消融分析，全量结果用于最终性能对比；二者不混用。x86 本地环境则用于补足大规模消融、OpenMP target 和 SYCL，因为这些实验依赖本机 Intel GPU 与 oneAPI 编译环境。
 
 OpenMP target 的可靠性检查还包括设备执行确认。target 区域设置 mandatory offload，并通过设备端标记确认 kernel 不是在 initial device 上执行。这样可以避免 Windows 环境中最常见的误判：代码看起来使用了 \code{target} pragma，但实际回退到 host CPU。SYCL 路径也记录 selector、backend、device 名称和编译器版本，使 GPU 结果可以与 OpenMP target 的设备环境对应起来。
 
