@@ -8,10 +8,12 @@
 \midrule
 x86 主 CPU & pthread\_results\_x86\_windows.csv & 798 & IVF/nl512 nprobe=32 & 0.044471 ms & 0.956950 \\
 x86 HNSW & pthread\_hnsw\_results\_x86\_windows.csv & 84 & HNSW-ToolCompare/StdAsync ef=64 & 0.009739 ms & 0.954540 \\
+x86 OpenMP CPU & pthread\_openmp\_cpu\_results\_x86\_windows.csv & 73 & OpenMP-CPU-IVF/nl512-dynamic nprobe=32 & 0.082060 ms & 0.956950 \\
 ARM 主 CPU & pthread\_results\_arm.csv & 864 & IVF/nl512 nprobe=32 & 0.193230 ms & 0.956240 \\
 ARM HNSW & pthread\_hnsw\_results\_arm.csv & 84 & HNSW-ToolCompare/StdThread ef=64 & 0.085378 ms & 0.954280 \\
+ARM OpenMP CPU & pthread\_openmp\_cpu\_results\_arm.csv & 49 & OpenMP-CPU-IVF/nl512-dynamic nprobe=32 & 0.338880 ms & 0.950767 \\
 OpenMP target & pthread\_openmp\_target\_device\_results\_x86\_windows.csv & 36 & OpenMP-Target-IVF/LevelZero-IVF-nl2048-cap3840 nprobe=81 & 0.186502 ms & 0.950170 \\
-oneAPI/SYCL & pthread\_sycl\_o2\_2024\_results\_x86\_windows.csv & 6 & SYCL-IVF/IntelOpenCLGPU-BatchedUSM-IVF-nl2048 nprobe=80 & 0.215992 ms & 0.950600 \\
+oneAPI/SYCL & pthread\_sycl\_o2\_2024\_results\_x86\_windows.csv & 6 & SYCL-IVF/IntelOpenCLGPU-BatchedUSM-IVF-nl2048 nprobe=84 & 0.210546 ms & 0.952790 \\
 \bottomrule
 \end{tabular}}
 \end{table}

@@ -82,6 +82,8 @@ def family_of(row):
         if "Layer0" in method:
             return "HNSW intra-query"
         return "HNSW"
+    if exp.startswith("OpenMP-CPU"):
+        return "OpenMP CPU"
     if exp.startswith("OpenMP"):
         return "OpenMP target"
     if exp.startswith("SYCL"):
@@ -108,6 +110,8 @@ def load_all():
         "x86_hnsw": read_csv("pthread_hnsw_results_x86_windows.csv"),
         "arm_main": read_csv("pthread_results_arm.csv"),
         "arm_hnsw": read_csv("pthread_hnsw_results_arm.csv"),
+        "x86_openmp_cpu": read_csv("pthread_openmp_cpu_results_x86_windows.csv"),
+        "arm_openmp_cpu": read_csv("pthread_openmp_cpu_results_arm.csv"),
         "sycl": read_csv("pthread_sycl_o2_2024_results_x86_windows.csv"),
         "openmp": read_csv("pthread_openmp_target_device_results_x86_windows.csv"),
         "opencl": read_csv("pthread_opencl_o2_results.csv"),
@@ -115,7 +119,11 @@ def load_all():
     }
     for key, df in data.items():
         if not df.empty:
-            if key.startswith("x86"):
+            if key == "x86_openmp_cpu":
+                df["platform"] = "x86 Windows OpenMP CPU"
+            elif key == "arm_openmp_cpu":
+                df["platform"] = "ARM Kunpeng OpenMP CPU"
+            elif key.startswith("x86"):
                 df["platform"] = "x86 Windows"
             elif key.startswith("arm"):
                 df["platform"] = "ARM Kunpeng"
@@ -153,10 +161,12 @@ def fig_global_frontier(data):
     rows = [
         pick(data["x86_hnsw"], "x86 HNSW best"),
         pick(data["x86_main"], "x86 IVF best", family="IVF/IVF-PQ"),
+        pick(data["x86_openmp_cpu"], "x86 OpenMP CPU IVF", family="OpenMP CPU"),
         pick(data["x86_main"], "x86 FastScan/PQ best", family="PQ/SDC/FastScan"),
         pick(data["x86_main"], "x86 exact flat", family="Flat"),
         pick(data["arm_hnsw"], "ARM HNSW best"),
         pick(data["arm_main"], "ARM IVF best", family="IVF/IVF-PQ"),
+        pick(data["arm_openmp_cpu"], "ARM OpenMP CPU IVF", family="OpenMP CPU"),
         pick(data["arm_main"], "ARM FastScan/PQ best", family="PQ/SDC/FastScan"),
         pick(data["arm_main"], "ARM exact flat", family="Flat"),
         pick(data["openmp"], "Intel GPU OpenMP target"),
@@ -167,6 +177,8 @@ def fig_global_frontier(data):
     color_map = {
         "x86 Windows": "#1f77b4",
         "ARM Kunpeng": "#d62728",
+        "x86 Windows OpenMP CPU": "#17becf",
+        "ARM Kunpeng OpenMP CPU": "#bcbd22",
         "x86 Intel GPU SYCL": "#2ca02c",
         "x86 Intel GPU OpenMP target": "#9467bd",
     }
@@ -238,10 +250,22 @@ def fig_thread_scaling(data, platform_key, name, title):
 
 
 def fig_ivf_tradeoff(data):
+    def best_curve(g):
+        rows = []
+        for _, gg in g.groupby("param2"):
+            b = best_under(gg, target=0.0)
+            if not b.empty:
+                rows.append(b)
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values("param2")
+
     fig, ax = plt.subplots()
     configs = [
         ("x86 Windows", data["x86_main"], "#1f77b4", "o"),
         ("ARM Kunpeng", data["arm_main"], "#d62728", "s"),
+        ("x86 OpenMP CPU", data["x86_openmp_cpu"], "#17becf", "P"),
+        ("ARM OpenMP CPU", data["arm_openmp_cpu"], "#bcbd22", "X"),
         ("OpenMP target", data["openmp"], "#9467bd", "D"),
         ("oneAPI/SYCL", data["sycl"], "#2ca02c", "^"),
     ]
@@ -250,9 +274,12 @@ def fig_ivf_tradeoff(data):
             continue
         if label in ("x86 Windows", "ARM Kunpeng"):
             g = df[(df["experiment"] == "IVF") & (df["method"] == "nl512")]
+        elif label in ("x86 OpenMP CPU", "ARM OpenMP CPU"):
+            g = df[(df["experiment"] == "OpenMP-CPU-IVF") & (df["method"].str.contains("dynamic", na=False))]
         else:
             g = df.copy()
         g = g.dropna(subset=["param2", "latency_ms", "recall@100"]).sort_values("param2")
+        g = best_curve(g)
         if g.empty:
             continue
         ax.plot(g["param2"], g["recall@100"], marker=marker, color=color, lw=1.8, label=label)
@@ -269,9 +296,12 @@ def fig_ivf_tradeoff(data):
             continue
         if label in ("x86 Windows", "ARM Kunpeng"):
             g = df[(df["experiment"] == "IVF") & (df["method"] == "nl512")]
+        elif label in ("x86 OpenMP CPU", "ARM OpenMP CPU"):
+            g = df[(df["experiment"] == "OpenMP-CPU-IVF") & (df["method"].str.contains("dynamic", na=False))]
         else:
             g = df.copy()
         g = g.dropna(subset=["param2", "latency_ms", "recall@100"]).sort_values("param2")
+        g = best_curve(g)
         if g.empty:
             continue
         ax.plot(g["param2"], g["latency_ms"], marker=marker, color=color, lw=1.8, label=label)
@@ -371,32 +401,58 @@ def fig_stage_breakdown(data):
         if r.empty:
             continue
         labels.append(label)
+        def stage_value(name):
+            value = pd.to_numeric(pd.Series([r.get(name, 0.0)]), errors="coerce").iloc[0]
+            return 0.0 if pd.isna(value) else float(value)
+
         rows.append([
-            float(r.get("encode_us", 0.0) or 0.0),
-            float(r.get("lut_us", 0.0) or 0.0),
-            float(r.get("scan_us", 0.0) or 0.0),
-            float(r.get("select_us", 0.0) or 0.0),
-            float(r.get("rerank_us", 0.0) or 0.0),
+            stage_value("encode_us"),
+            stage_value("lut_us"),
+            stage_value("scan_us"),
+            stage_value("select_us"),
+            stage_value("rerank_us"),
         ])
     if not rows:
         return
     arr = np.array(rows)
-    fig, ax = plt.subplots()
-    bottom = np.zeros(arr.shape[0])
+    fig, ax = plt.subplots(figsize=(7.4, 4.5))
+    left = np.zeros(arr.shape[0])
     names = ["coarse/encode", "fill/LUT", "scan", "select", "rerank"]
     colors = ["#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"]
+    y = np.arange(len(labels))
     for i, name in enumerate(names):
-        ax.bar(labels, arr[:, i], bottom=bottom, label=name, color=colors[i])
-        bottom += arr[:, i]
-    ax.set_ylabel("Time per query (us)")
+        ax.barh(y, arr[:, i], left=left, label=name, color=colors[i], edgecolor="white", linewidth=0.6)
+        for j, value in enumerate(arr[:, i]):
+            if value >= 12.0:
+                ax.text(left[j] + value / 2, j, f"{value:.1f}", ha="center", va="center",
+                        fontsize=7, color="black")
+        left += arr[:, i]
+    for j, label in enumerate(labels):
+        zero_names = [names[i] for i, value in enumerate(arr[j]) if value == 0.0]
+        small_names = [f"{names[i]}={arr[j, i]:.2f}" for i, value in enumerate(arr[j])
+                       if 0.0 < value < 12.0]
+        notes = []
+        if small_names:
+            notes.append("small: " + ", ".join(small_names))
+        if zero_names:
+            notes.append("0 us: " + ", ".join(zero_names))
+        if notes:
+            ax.text(left[j] + max(left.max(), 1.0) * 0.02, j,
+                    "; ".join(notes),
+                    va="center", fontsize=7, color="#444444")
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Time per query (us)")
     ax.set_title("Accelerator Path Timing Breakdown")
-    ax.legend(frameon=True)
+    ax.legend(frameon=True, ncol=3, loc="lower right")
+    ax.set_xlim(0, max(left) * 1.28)
     savefig("fig_pthread_report_09_accel_breakdown")
 
 
 def fig_build_latency(data):
     frames = []
-    for key in ["x86_main", "x86_hnsw", "arm_main", "arm_hnsw"]:
+    for key in ["x86_main", "x86_hnsw", "x86_openmp_cpu", "arm_main", "arm_hnsw", "arm_openmp_cpu"]:
         df = data[key]
         if not df.empty:
             frames.append(df)
@@ -439,8 +495,10 @@ def generate_tables(data):
     summary_rows = [
         ("x86 主 CPU", "pthread_results_x86_windows.csv", len(data["x86_main"]), best_under(data["x86_main"])),
         ("x86 HNSW", "pthread_hnsw_results_x86_windows.csv", len(data["x86_hnsw"]), best_under(data["x86_hnsw"])),
+        ("x86 OpenMP CPU", "pthread_openmp_cpu_results_x86_windows.csv", len(data["x86_openmp_cpu"]), best_under(data["x86_openmp_cpu"])),
         ("ARM 主 CPU", "pthread_results_arm.csv", len(data["arm_main"]), best_under(data["arm_main"])),
         ("ARM HNSW", "pthread_hnsw_results_arm.csv", len(data["arm_hnsw"]), best_under(data["arm_hnsw"])),
+        ("ARM OpenMP CPU", "pthread_openmp_cpu_results_arm.csv", len(data["arm_openmp_cpu"]), best_under(data["arm_openmp_cpu"])),
         ("OpenMP target", "pthread_openmp_target_device_results_x86_windows.csv", len(data["openmp"]), best_under(data["openmp"])),
         ("oneAPI/SYCL", "pthread_sycl_o2_2024_results_x86_windows.csv", len(data["sycl"]), best_under(data["sycl"])),
     ]

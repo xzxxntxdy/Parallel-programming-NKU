@@ -614,6 +614,8 @@ int main(int argc, char** argv) {
         for (size_t npi = 0; npi < nprobe_values.size(); ++npi) {
             int nprobe = nprobe_values[npi];
             double recall_sum = 0.0;
+            double encode_us_sum = 0.0;
+            double lut_us_sum = 0.0;
             double select_us_sum = 0.0;
             long long t0 = now_us();
 
@@ -622,12 +624,18 @@ int main(int argc, char** argv) {
                 for (size_t local_q = 0; local_q < bs; ++local_q) {
                     size_t qi = batch_begin + local_q;
                     const float* qptr = query + qi * base_d;
+                    long long layout_t0 = now_us();
                     for (size_t d = 0; d < base_d; ++d) {
                         query_batch[d * batch_size + local_q] = qptr[d];
                     }
+                    lut_us_sum += static_cast<double>(now_us() - layout_t0);
+                    long long coarse_t0 = now_us();
                     select_probe_ids(ivf, qptr, nprobe, probe_ids);
+                    encode_us_sum += static_cast<double>(now_us() - coarse_t0);
+                    long long fill_t0 = now_us();
                     std::copy(probe_ids.begin(), probe_ids.end(),
                               batch_probe_ids.begin() + local_q * static_cast<size_t>(max_nprobe));
+                    lut_us_sum += static_cast<double>(now_us() - fill_t0);
                 }
 
                 q.memcpy(query_dev, query_batch.data(), query_batch_total * sizeof(float));
@@ -668,8 +676,10 @@ int main(int argc, char** argv) {
             double total_us = static_cast<double>(now_us() - t0);
             double latency_ms = total_us / 1000.0 / static_cast<double>(nq);
             double recall = recall_sum / static_cast<double>(nq);
+            double encode_us = encode_us_sum / static_cast<double>(nq);
+            double lut_us = lut_us_sum / static_cast<double>(nq);
             double select_us = select_us_sum / static_cast<double>(nq);
-            double scan_us = latency_ms * 1000.0 - select_us;
+            double scan_us = latency_ms * 1000.0 - select_us - encode_us - lut_us;
             if (scan_us < 0.0) scan_us = 0.0;
             double speedup = cfg.baseline_ms > 0.0 ? cfg.baseline_ms / latency_ms : 0.0;
 
@@ -684,14 +694,16 @@ int main(int argc, char** argv) {
             notes += "; gpu_block_topk=1; workgroup=" + std::to_string(cfg.workgroup_size);
             notes += "; local_k=" + std::to_string(cfg.local_k);
             notes += "; partial_candidates=" + std::to_string(partial_capacity);
-            notes += "; coarse_host=1; final_topk_host=1; usm_device=1";
+            notes += "; coarse_host=1; candidate_fill_host=1; final_topk_host=1; usm_device=1";
 
             out << "SYCL-IVF," << method << ",0,nprobe," << nprobe
                 << "," << latency_ms
                 << "," << recall
                 << "," << speedup
                 << ",0," << build_sec
-                << ",0,0," << scan_us
+                << "," << encode_us
+                << "," << lut_us
+                << "," << scan_us
                 << "," << select_us
                 << ",0," << csv_quote(notes) << "\n";
 

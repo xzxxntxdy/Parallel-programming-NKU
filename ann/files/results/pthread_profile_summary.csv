@@ -29,3 +29,8 @@ arm_pthread_main,Scaling,FastScan-b64-p500,32,threads,32,0.304762,0.95252,55.889
 arm_pthread_hnsw,HNSW-IntraQuery,Layer0EdgePartition,8,ef,128,0.317768,0.99448,50.652728,43.279694,0.0,0.0,0.0,0.0,0.0,wall_time_only,0.0,0.0,level0_edge_index_partition; bottom_graph_only
 arm_pthread_hnsw,HNSW-ToolCompare,StdThread,16,ef,64,0.085378,0.95428,188.524163,43.279694,0.0,0.0,0.0,0.0,0.0,wall_time_only,0.0,0.0,single_index_query_parallel
 arm_pthread_hnsw,IVF-HNSW,nlist16-M16-efC100,32,nprobe,8,0.690392,0.98318,23.314024,26.961021,0.0,0.0,0.0,0.0,0.0,wall_time_only,0.0,0.0,nested_ivf_hnsw; each query searches selected shard graphs
+arm_openmp_cpu,OpenMP-CPU-Baseline,FlatScalar-Pthread1T,1,method,0,19.419183,1.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,wall_time_only,0.0,0.0,baseline_for_speedup_only
+arm_openmp_cpu,OpenMP-CPU-Flat,Query-dynamic,8,schedule,1,1.952743,1.0,9.944565,0.0,0.0,0.0,0.0,0.0,0.0,wall_time_only,0.0,0.0,host_openmp_query_parallel; simd=NEON-PrefetchTopK
+arm_openmp_cpu,OpenMP-CPU-FlatBaseSplit,BaseSplit-dynamic,8,local_p,100,2.950813,1.0,6.58096,0.0,0.0,0.0,0.0,0.0,0.0,wall_time_only,0.0,0.0,host_openmp_base_partition; topk_reduce
+arm_openmp_cpu,OpenMP-CPU-IVF,nl512-dynamic,8,nprobe,32,0.33888,0.950767,57.304011,59.698708,0.0,0.0,0.0,0.0,0.0,wall_time_only,0.0,0.0,host_openmp_query_parallel; coarse_plus_fine_scan
+arm_openmp_cpu,OpenMP-CPU-PQ-ADC,M16-dynamic,8,p,1000,0.63129,0.9908,30.761113,1.0588,0.0,32.043333,3060.7,912.423333,586.996667,scan_us,3060.7,0.6665050387048156,host_openmp_query_parallel; thread_local_lut

@@ -3,6 +3,13 @@ AGENTS.md
 anndata/
 faiss/
 
+# Markdown docs: keep only README files tracked
+*.md
+!README.md
+!readme.md
+!**/README.md
+!**/readme.md
+
 # Build outputs
 build/
 *.exe
