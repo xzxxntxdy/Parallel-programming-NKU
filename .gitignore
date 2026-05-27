@@ -56,3 +56,5 @@ __pycache__/
 *.synctex.gz
 *.toc
 *.xdv
+*.nav
+*.snm
