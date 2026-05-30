@@ -1,0 +1,6 @@
+method,kernel,mpi_size,nthreads,thread_model,comm,nprobe,ef,latency_ms,recall@100,build_sec,search_ms,comm_ms,merge_ms,work_imbalance,notes
+hnsw,simd,1,4,openmp,nonblocking,64,64,0.03116,0.95454,6.42305,15.5723,0.1789,15.4087,1.0,hnsw-comm=nonblocking-tm=openmp-kernel=simd-nl=512-npb=64-ef=64;full
+ivf,simd,8,1,stdthread,blocking,32,64,0.057296,0.96542,0.291472,36.8975,5.334,19.3558,1.036171,ivf-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=32-ef=64;full
+multi-hnsw,simd,4,1,stdthread,nonblocking,64,32,0.073396,0.9929,1.310574,56.9061,1.6136,16.3527,1.0,multi-hnsw-comm=nonblocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=32;full
+flat,simd,8,1,stdthread,blocking,512,64,0.19279,1.0,0.0,171.6737,16.516,20.1985,1.0,flat-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=512-ef=64;full
+ivf-hnsw,simd,8,1,stdthread,nonblocking,32,64,0.248819,0.96542,1.626517,223.837,30.5617,23.2793,1.0,ivf-hnsw-comm=nonblocking-tm=stdthread-kernel=simd-nl=512-npb=32-ef=64;full

@@ -1,0 +1,17 @@
+method,kernel,mpi_size,nthreads,thread_model,comm,nprobe,ef,latency_ms,recall@100,build_sec,search_ms,comm_ms,merge_ms,work_imbalance,notes
+flat,scalar,1,1,stdthread,blocking,512,64,3.039268,1.0,0.0,3024.6073,0.1743,14.4857,1.0,flat-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=512-ef=64;full
+flat,simd,1,1,stdthread,blocking,512,64,1.744912,1.0,0.0,1730.0769,0.2028,14.6324,1.0,flat-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=512-ef=64;full
+flat,scalar,2,1,stdthread,blocking,512,64,1.660295,1.0,1e-06,1644.5897,17.8832,15.1447,1.0,flat-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=512-ef=64;full
+flat,simd,2,1,stdthread,blocking,512,64,0.746096,1.0,0.0,731.0445,3.4794,14.8412,1.0,flat-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=512-ef=64;full
+flat,scalar,4,1,stdthread,blocking,512,64,0.871203,1.0,0.0,853.7124,13.4347,16.8635,1.0,flat-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=512-ef=64;full
+flat,simd,4,1,stdthread,blocking,512,64,0.379633,1.0,0.0,361.6358,20.9399,17.0933,1.0,flat-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=512-ef=64;full
+flat,scalar,8,1,stdthread,blocking,512,64,0.493685,1.0,0.0,472.4905,39.4242,19.9538,1.0,flat-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=512-ef=64;full
+flat,simd,8,1,stdthread,blocking,512,64,0.19279,1.0,0.0,171.6737,16.516,20.1985,1.0,flat-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=512-ef=64;full
+ivf,scalar,1,1,stdthread,blocking,64,64,1.26581,0.98568,10.21999,1251.5259,0.1908,14.0932,1.0,ivf-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=64-ef=64;full
+ivf,simd,1,1,stdthread,blocking,64,64,0.408994,0.98568,1.778275,393.9275,0.2066,14.8597,1.0,ivf-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=64;full
+ivf,scalar,2,1,stdthread,blocking,64,64,0.56022,0.98596,5.046335,545.1167,1.0343,14.76,1.00825,ivf-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=64-ef=64;full
+ivf,simd,2,1,stdthread,blocking,64,64,0.203807,0.98596,0.888873,188.6238,4.1564,14.64,1.00825,ivf-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=64;full
+ivf,scalar,4,1,stdthread,blocking,64,64,0.28693,0.98748,2.806223,268.9256,45.9065,17.4719,1.023532,ivf-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=64-ef=64;full
+ivf,simd,4,1,stdthread,blocking,64,64,0.111306,0.98748,0.481027,93.5883,2.5483,17.3401,1.023532,ivf-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=64;full
+ivf,scalar,8,1,stdthread,blocking,64,64,0.155375,0.98916,1.657297,134.3085,18.5523,20.0481,1.03183,ivf-comm=blocking-tm=stdthread-kernel=scalar-nl=512-npb=64-ef=64;full
+ivf,simd,8,1,stdthread,blocking,64,64,0.074267,0.98916,0.30563,54.0904,10.2339,19.0002,1.03183,ivf-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=64;full

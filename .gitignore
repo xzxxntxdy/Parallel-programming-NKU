@@ -26,9 +26,15 @@ build/
 
 #envs
 tools/
+.conda-envs/
+.conda-pkgs/
 
 # Raw profiling results
 vtune/
+
+# Local smoke/debug CSVs
+ann/files/results/*smoke*.csv
+ann/files/results/mpi_debug.csv
 
 # Python cache
 __pycache__/

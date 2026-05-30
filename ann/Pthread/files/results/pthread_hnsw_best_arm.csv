@@ -1,0 +1,2 @@
+criterion,experiment,method,nthreads,param1,param2,latency_ms,recall@100,speedup,index_mb,build_sec,notes
+min latency with recall@100>=0.95,HNSW-ToolCompare,StdThread,16,ef,64,0.085378,0.954280,188.524163,0.000000,43.279694,single_index_query_parallel

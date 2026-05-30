@@ -1,597 +1,423 @@
-/* Pthread ANN benchmark runner.
+#include "mpi_hnsw.h"
 
-   Default mode is submission-safe: running ./main executes only the final
-   selected configuration and prints recall@100 plus normalized latency.
-
-   Full experiment mode:
-     ./main --benchmark [--quick|--smoke] [--data PATH] [--nq N] [--with-hnsw]
-     ./main --hnsw-only [--data PATH] [--nq N]
-
-   The implementation reuses the SIMD-stage kernels in ann_search.h and
-   ann_quant.h, then adds pthread-level query/base/pipeline parallelism.
-*/
+#include <mpi.h>
 
 #include <algorithm>
-#include <cstdio>
-#include <cstdlib>
-#include <iomanip>
 #include <iostream>
-#include <string>
-#include <vector>
+#include <sstream>
 
-#include "ann_search.h"
-#include "ann_quant.h"
-#include "pthread_benchmark.h"
-#include "pthread_common.h"
-#include "pthread_flat.h"
-#include "pthread_pq.h"
-#include "pthread_sq.h"
-#include "pthread_sdc.h"
-#include "pthread_ivf.h"
-#include "pthread_hnsw.h"
-#include "hnswlib/hnswlib/hnswlib.h"
-
-using namespace ann;
-using namespace hnswlib;
-using namespace pthread_ann;
+using namespace mpi_ann;
 
 namespace {
 
-const size_t kRecallAt = 100;
-
-std::vector<int> thread_values(bool reduced) {
-    if (reduced) {
-        int arr[] = {1, 2, 4, 8};
-        return std::vector<int>(arr, arr + 4);
-    }
-    int arr[] = {1, 2, 4, 8, 16, 32};
-    return std::vector<int>(arr, arr + 6);
+ann::SearchMethod default_simd_kernel() {
+#if ANN_HAS_AVX
+    return ann::kManualAvx;
+#elif ANN_HAS_NEON
+    return ann::kManualNeonUnroll4;
+#elif ANN_HAS_SSE
+    return ann::kManualSse;
+#else
+    return ann::kAutoVectorized;
+#endif
 }
 
-std::vector<int> rerank_values(bool reduced, bool medium) {
-    if (reduced) {
-        int arr[] = {100, 500, 1000};
-        return std::vector<int>(arr, arr + 3);
-    }
-    if (medium) {
-        int arr[] = {50, 100, 200, 300, 400, 450, 500, 750, 1000, 1500, 2000};
-        return std::vector<int>(arr, arr + 11);
-    }
-    int arr[] = {50, 100, 200, 300, 400, 450, 500, 750, 1000, 1500, 2000, 5000};
-    return std::vector<int>(arr, arr + 12);
+ann::SearchMethod parse_kernel(const std::string& name) {
+    if (name == "scalar") return ann::kScalarNoVec;
+    if (name == "auto") return ann::kAutoVectorized;
+    if (name == "sse") return ann::kManualSse;
+    if (name == "avx") return ann::kManualAvx;
+    if (name == "neon") return ann::kManualNeonUnroll4;
+    return default_simd_kernel();
 }
 
-void run_flat_experiments(const BenchmarkData& data,
-                          size_t nq,
-                          const std::vector<int>& threads,
-                          double base_lat,
-                          ResultWriter& writer) {
-    struct MethodSpec {
-        const char* label;
-        SearchMethod method;
-        size_t prefetch;
-    };
-    MethodSpec methods[] = {
-        {"Scalar", kScalarNoVec, 0},
-        {"AutoVec", kAutoVectorized, 0},
-        {"SSE", kManualSse, 0},
-        {"AVX2", kManualAvx, 0},
-        {"NEON-Unroll4", kManualNeonUnroll4, 0},
-        {"PrefetchTopK", kManualNeonUnroll4PrefetchFixedTopK, 16},
-    };
+struct Options {
+    std::string method = "ivf";
+    std::string comm = "blocking";
+    std::string thread_model = "stdthread";
+    std::string kernel_name = "simd";
+    ann::SearchMethod kernel = default_simd_kernel();
+    std::string data_dir = find_data_dir();
+    std::string csv = "files/results/mpi_results_x86_windows.csv";
+    size_t nbase = 100000;
+    size_t nq = 1000;
+    size_t k = 100;
+    int nlist = 512;
+    int nprobe = 32;
+    int kmeans_iters = 8;
+    int threads = 1;
+    int repeat = 1;
+    int nodes = 1;
+    int ppn = 1;
+    size_t hnsw_m = 16;
+    size_t ef = 64;
+    size_t ef_construction = 100;
+    bool quick = false;
+    bool smoke = false;
+    bool mpi_thread_multiple = false;
+};
 
-    std::cout << "\n=== Flat SIMD + pthread ablation ===\n";
-    for (size_t mi = 0; mi < sizeof(methods) / sizeof(methods[0]); ++mi) {
-        for (size_t ti = 0; ti < threads.size(); ++ti) {
-            double lat = 0.0, rec = 0.0;
-            flat_query_parallel(data.base, data.query, data.gt, data.base_n, data.dim,
-                                data.gt_dim, nq, kRecallAt, methods[mi].method,
-                                methods[mi].prefetch, threads[ti], lat, rec);
-            writer.row("Flat-Ablation", methods[mi].label, threads[ti], "method", 0,
-                       lat, rec, base_lat / lat);
-            std::cout << "Flat " << methods[mi].label << " t=" << threads[ti]
-                      << " latency=" << lat << " ms recall=" << rec << "\n";
-        }
-    }
-
-    int local_p_vals[] = {100, 200, 500};
-    for (size_t pi = 0; pi < sizeof(local_p_vals) / sizeof(local_p_vals[0]); ++pi) {
-        for (size_t ti = 0; ti < threads.size(); ++ti) {
-            double lat = 0.0, rec = 0.0;
-            flat_basesplit_parallel(data.base, data.query, data.gt, data.base_n, data.dim,
-                                    data.gt_dim, nq, kRecallAt,
-                                    kManualNeonUnroll4PrefetchFixedTopK, 16,
-                                    threads[ti], local_p_vals[pi], lat, rec);
-            writer.row("Flat-BaseSplit", "PrefetchTopK", threads[ti], "local_p",
-                       local_p_vals[pi], lat, rec, base_lat / lat);
-        }
-    }
-}
-
-void run_sq_experiments(const BenchmarkData& data,
-                        size_t nq,
-                        const std::vector<int>& threads,
-                        const std::vector<int>& pvals,
-                        double base_lat,
-                        ResultWriter& writer) {
-    std::cout << "\n=== SQ8 + pthread p sweep ===\n";
-    SQ8Index sq;
-    long long t0 = now_us();
-    build_sq8_index(data.base, data.base_n, data.dim, sq);
-    double build_sec = (now_us() - t0) / 1000000.0;
-    double index_mb = sq8_index_size_mb(sq);
-
-    for (size_t pi = 0; pi < pvals.size(); ++pi) {
-        for (size_t ti = 0; ti < threads.size(); ++ti) {
-            TimingAvg tim;
-            double lat = 0.0, rec = 0.0;
-            sq8_query_parallel(sq, data.base, data.query, data.gt, nq, kRecallAt,
-                               pvals[pi], data.gt_dim, threads[ti], false,
-                               lat, rec, &tim);
-            writer.row("SQ8", "SQ8-LUT", threads[ti], "p", pvals[pi], lat, rec,
-                       base_lat / lat, index_mb, build_sec, &tim);
-        }
-    }
-}
-
-void run_pq_experiments(const BenchmarkData& data,
-                        size_t nq,
-                        const BenchmarkConfig& cfg,
-                        const std::vector<int>& threads,
-                        const std::vector<int>& pvals,
-                        double base_lat,
-                        ResultWriter& writer,
-                        PQIndex& best_pq,
-                        PQFastScanIndex& best_fast) {
-    std::cout << "\n=== PQ-ADC / PQ-SDC / FastScan pthread sweeps ===\n";
-    int mvals[] = {8, 12, 16};
-    for (size_t mi = 0; mi < sizeof(mvals) / sizeof(mvals[0]); ++mi) {
-        int m = mvals[mi];
-        PQIndex pq;
-        long long build_t0 = now_us();
-        build_pq_index(data.base, data.base_n, data.dim, m, 256,
-                       cfg.train_sample, cfg.kmeans_iters, pq);
-        double build_sec = (now_us() - build_t0) / 1000000.0;
-        double index_mb = pq_index_size_mb(pq);
-
-        std::vector<float> sdc_table;
-        build_pq_sdc_table(pq, sdc_table);
-
-        if (m == 16) {
-            PQFastScanIndex fast32, fast64, fast128;
-            build_pq_fastscan_index(pq, 32, fast32);
-            build_pq_fastscan_index(pq, 64, fast64);
-            build_pq_fastscan_index(pq, 128, fast128);
-            best_pq = pq;
-            best_fast = fast64;
-
-            int fs_pvals[] = {50, 100, 200, 300, 400, 450, 500, 750, 1000, 1500, 2000};
-            PQFastScanIndex* fast_indices[] = {&fast32, &fast64, &fast128};
-            int blocks[] = {32, 64, 128};
-            for (int bi = 0; bi < 3; ++bi) {
-                for (size_t pi = 0; pi < sizeof(fs_pvals) / sizeof(fs_pvals[0]); ++pi) {
-                    for (size_t ti = 0; ti < threads.size(); ++ti) {
-                        TimingAvg tim_fs;
-                        double mae = 0.0;
-                        double lat = 0.0, rec = 0.0;
-                        pq_fastscan_query_parallel_timed(pq, *fast_indices[bi],
-                                                         data.base, data.query, data.gt,
-                                                         nq, kRecallAt, fs_pvals[pi],
-                                                         data.gt_dim, threads[ti],
-                                                         lat, rec, &tim_fs, &mae);
-                        writer.row("FastScan", compact_param("b", blocks[bi]), threads[ti],
-                                   "p", fs_pvals[pi], lat, rec, base_lat / lat,
-                                   index_mb, build_sec, &tim_fs,
-                                   std::string("lut_mae=") + std::to_string(mae));
-                        if (blocks[bi] == 64 && threads[ti] == 1) {
-                            writer.row("FS-Breakdown", "b64", 1, "p", fs_pvals[pi],
-                                       tim_fs.scan_us / 1000.0, 0.0, 0.0,
-                                       index_mb, build_sec, &tim_fs);
-                        }
-                    }
-                }
+Options parse_options(int argc, char** argv) {
+    Options opt;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto need_value = [&](const std::string& name) -> const char* {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for " << name << "\n";
+                std::exit(2);
             }
-
-            int scaling_threads[] = {1, 2, 4, 8, 16, 32};
-            for (size_t ti = 0; ti < sizeof(scaling_threads) / sizeof(scaling_threads[0]); ++ti) {
-                double lat = 0.0, rec = 0.0;
-                TimingAvg tim_fs;
-                pq_fastscan_query_parallel_timed(pq, fast64, data.base, data.query, data.gt,
-                                                 nq, kRecallAt, 500, data.gt_dim,
-                                                 scaling_threads[ti], lat, rec, &tim_fs);
-                writer.row("Scaling", "FastScan-b64-p500", scaling_threads[ti],
-                           "threads", scaling_threads[ti], lat, rec, base_lat / lat,
-                           index_mb, build_sec, &tim_fs);
-            }
-
-            int batch_vals[] = {1, 4, 8, 16, 32, 64};
-            for (size_t bi = 0; bi < sizeof(batch_vals) / sizeof(batch_vals[0]); ++bi) {
-                int stages = batch_vals[bi] < 8 ? 2 : 3;
-                if (batch_vals[bi] == 1) stages = 1;
-                TimingAvg tim_pipe;
-                double lat = 0.0, rec = 0.0;
-                pq_sdc_pipeline(pq, sdc_table, data.base, data.query, data.gt,
-                                nq, kRecallAt, 1000, data.gt_dim, stages,
-                                batch_vals[bi], lat, rec, &tim_pipe);
-                writer.row("SDC-Pipeline", compact_param("stage", stages), stages,
-                           "batch", batch_vals[bi], lat, rec, base_lat / lat,
-                           index_mb, build_sec, &tim_pipe);
-            }
-        }
-
-        for (size_t pi = 0; pi < pvals.size(); ++pi) {
-            int p = pvals[pi];
-            for (size_t ti = 0; ti < threads.size(); ++ti) {
-                TimingAvg tim_adc;
-                double lat = 0.0, rec = 0.0;
-                pq_query_parallel(pq, data.base, data.query, data.gt, nq, kRecallAt,
-                                  p, data.gt_dim, threads[ti], lat, rec, &tim_adc);
-                writer.row("PQ-M", compact_param("M", m), threads[ti], "p", p,
-                           lat, rec, base_lat / lat, index_mb, build_sec, &tim_adc);
-
-                if (p == 1000 || p == 500 || cfg.quick) {
-                    TimingAvg tim_sdc;
-                    double sdc_lat = 0.0, sdc_rec = 0.0;
-                    pq_sdc_query_parallel(pq, sdc_table, data.base, data.query, data.gt,
-                                          nq, kRecallAt, p, data.gt_dim, threads[ti],
-                                          sdc_lat, sdc_rec, &tim_sdc);
-                    writer.row("PQ-SDC", compact_param("M", m), threads[ti], "p", p,
-                               sdc_lat, sdc_rec, base_lat / sdc_lat,
-                               index_mb + (double)sdc_table.size() * sizeof(float) / 1000000.0,
-                               build_sec, &tim_sdc);
-                }
-            }
+            return argv[++i];
+        };
+        if (a == "--method") opt.method = need_value(a);
+        else if (a == "--comm") opt.comm = need_value(a);
+        else if (a == "--thread-model") opt.thread_model = need_value(a);
+        else if (a == "--kernel") opt.kernel_name = need_value(a);
+        else if (a == "--data") opt.data_dir = need_value(a);
+        else if (a == "--csv") opt.csv = need_value(a);
+        else if (a == "--nbase") opt.nbase = static_cast<size_t>(std::strtoull(need_value(a), nullptr, 10));
+        else if (a == "--nq") opt.nq = static_cast<size_t>(std::strtoull(need_value(a), nullptr, 10));
+        else if (a == "--k") opt.k = static_cast<size_t>(std::strtoull(need_value(a), nullptr, 10));
+        else if (a == "--nlist") opt.nlist = std::atoi(need_value(a));
+        else if (a == "--nprobe") opt.nprobe = std::atoi(need_value(a));
+        else if (a == "--iters") opt.kmeans_iters = std::atoi(need_value(a));
+        else if (a == "--threads") opt.threads = std::atoi(need_value(a));
+        else if (a == "--repeat") opt.repeat = std::atoi(need_value(a));
+        else if (a == "--nodes") opt.nodes = std::atoi(need_value(a));
+        else if (a == "--ppn") opt.ppn = std::atoi(need_value(a));
+        else if (a == "--hnsw-m") opt.hnsw_m = static_cast<size_t>(std::strtoull(need_value(a), nullptr, 10));
+        else if (a == "--ef") opt.ef = static_cast<size_t>(std::strtoull(need_value(a), nullptr, 10));
+        else if (a == "--efc") opt.ef_construction = static_cast<size_t>(std::strtoull(need_value(a), nullptr, 10));
+        else if (a == "--quick") {
+            opt.quick = true;
+            opt.nbase = 50000;
+            opt.nq = 300;
+            opt.kmeans_iters = 6;
+        } else if (a == "--smoke") {
+            opt.quick = true;
+            opt.smoke = true;
+            opt.nbase = 10000;
+            opt.nq = 50;
+            opt.nlist = 128;
+            opt.nprobe = 16;
+            opt.kmeans_iters = 4;
+        } else if (a == "--mpi-thread-multiple") {
+            opt.mpi_thread_multiple = true;
         }
     }
+    opt.nlist = std::max(1, opt.nlist);
+    opt.nprobe = std::max(1, opt.nprobe);
+    opt.threads = std::max(1, opt.threads);
+    opt.repeat = std::max(1, opt.repeat);
+    opt.nodes = std::max(1, opt.nodes);
+    opt.ppn = std::max(1, opt.ppn);
+    opt.kernel = parse_kernel(opt.kernel_name);
+    return opt;
 }
 
-void run_ivf_experiments(const BenchmarkData& data,
-                         size_t nq,
-                         const BenchmarkConfig& cfg,
-                         const std::vector<int>& threads,
-                         double base_lat,
-                         const PQIndex& pq,
-                         ResultWriter& writer) {
-    std::cout << "\n=== IVF / IVF-PQ pthread sweeps ===\n";
-    std::vector<int> nlists;
-    if (cfg.smoke || cfg.arm_quick) {
-        int arr[] = {128, 256};
-        nlists.assign(arr, arr + 2);
-    } else if (cfg.quick) {
-        int arr[] = {128, 256, 512};
-        nlists.assign(arr, arr + 3);
+void distribute_data(const Options& opt,
+                     int rank,
+                     int mpi_size,
+                     std::vector<float>& local_base,
+                     std::vector<float>& query,
+                     std::vector<int>& gt,
+                     size_t& global_begin,
+                     size_t& local_n,
+                     size_t& dim,
+                     size_t& nq,
+                     size_t& gt_dim,
+                     double& distribute_s) {
+    DataSet root_data;
+    double t0 = MPI_Wtime();
+    unsigned long long meta[4] = {0, 0, 0, 0};
+    if (rank == 0) {
+        root_data = load_dataset_root(opt.data_dir, opt.nbase, opt.nq);
+        meta[0] = static_cast<unsigned long long>(root_data.base_n);
+        meta[1] = static_cast<unsigned long long>(root_data.dim);
+        meta[2] = static_cast<unsigned long long>(root_data.query_n);
+        meta[3] = static_cast<unsigned long long>(root_data.gt_dim);
+    }
+    MPI_Bcast(meta, 4, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    size_t nbase = static_cast<size_t>(meta[0]);
+    dim = static_cast<size_t>(meta[1]);
+    nq = static_cast<size_t>(meta[2]);
+    gt_dim = static_cast<size_t>(meta[3]);
+
+    query.resize(nq * dim);
+    gt.resize(nq * gt_dim);
+    if (rank == 0) {
+        query = root_data.query;
+        gt = root_data.gt;
+    }
+    MPI_Bcast(query.data(), static_cast<int>(query.size()), MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(gt.data(), static_cast<int>(gt.size()), MPI_INT, 0, MPI_COMM_WORLD);
+
+    std::vector<int> counts(mpi_size), displs(mpi_size);
+    for (int r = 0; r < mpi_size; ++r) {
+        size_t begin = 0, count = 0;
+        split_range(nbase, mpi_size, r, begin, count);
+        counts[r] = static_cast<int>(count * dim);
+        displs[r] = static_cast<int>(begin * dim);
+        if (r == rank) {
+            global_begin = begin;
+            local_n = count;
+        }
+    }
+    local_base.resize(local_n * dim);
+    MPI_Scatterv(rank == 0 ? root_data.base.data() : nullptr,
+                 counts.data(),
+                 displs.data(),
+                 MPI_FLOAT,
+                 local_base.data(),
+                 counts[rank],
+                 MPI_FLOAT,
+                 0,
+                 MPI_COMM_WORLD);
+    distribute_s = MPI_Wtime() - t0;
+}
+
+void gather_results(const Options& opt,
+                    int rank,
+                    int mpi_size,
+                    size_t nq,
+                    size_t k,
+                    const std::vector<float>& local_dist,
+                    const std::vector<uint32_t>& local_ids,
+                    std::vector<float>& all_dist,
+                    std::vector<uint32_t>& all_ids) {
+    int count = static_cast<int>(nq * k);
+    if (rank == 0) {
+        all_dist.assign(static_cast<size_t>(mpi_size) * count, std::numeric_limits<float>::infinity());
+        all_ids.assign(static_cast<size_t>(mpi_size) * count, kInvalidId);
+    }
+
+    if (opt.comm == "nonblocking") {
+        MPI_Request reqs[2];
+        MPI_Igather(local_dist.data(), count, MPI_FLOAT,
+                    rank == 0 ? all_dist.data() : nullptr, count, MPI_FLOAT,
+                    0, MPI_COMM_WORLD, &reqs[0]);
+        MPI_Igather(local_ids.data(), count, MPI_UNSIGNED,
+                    rank == 0 ? all_ids.data() : nullptr, count, MPI_UNSIGNED,
+                    0, MPI_COMM_WORLD, &reqs[1]);
+        MPI_Waitall(2, reqs, MPI_STATUSES_IGNORE);
+    } else if (opt.comm == "p2p") {
+        if (rank == 0) {
+            std::copy(local_dist.begin(), local_dist.end(), all_dist.begin());
+            std::copy(local_ids.begin(), local_ids.end(), all_ids.begin());
+            for (int r = 1; r < mpi_size; ++r) {
+                MPI_Recv(all_dist.data() + static_cast<size_t>(r) * count, count, MPI_FLOAT,
+                         r, 100, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                MPI_Recv(all_ids.data() + static_cast<size_t>(r) * count, count, MPI_UNSIGNED,
+                         r, 101, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+        } else {
+            MPI_Send(local_dist.data(), count, MPI_FLOAT, 0, 100, MPI_COMM_WORLD);
+            MPI_Send(local_ids.data(), count, MPI_UNSIGNED, 0, 101, MPI_COMM_WORLD);
+        }
+    } else if (opt.comm == "onesided") {
+        MPI_Win win_dist, win_ids;
+        MPI_Win_create(rank == 0 ? all_dist.data() : nullptr,
+                       rank == 0 ? static_cast<MPI_Aint>(all_dist.size() * sizeof(float)) : 0,
+                       sizeof(float), MPI_INFO_NULL, MPI_COMM_WORLD, &win_dist);
+        MPI_Win_create(rank == 0 ? all_ids.data() : nullptr,
+                       rank == 0 ? static_cast<MPI_Aint>(all_ids.size() * sizeof(uint32_t)) : 0,
+                       sizeof(uint32_t), MPI_INFO_NULL, MPI_COMM_WORLD, &win_ids);
+        MPI_Win_fence(0, win_dist);
+        MPI_Win_fence(0, win_ids);
+        MPI_Put(local_dist.data(), count, MPI_FLOAT, 0,
+                static_cast<MPI_Aint>(rank) * count, count, MPI_FLOAT, win_dist);
+        MPI_Put(local_ids.data(), count, MPI_UNSIGNED, 0,
+                static_cast<MPI_Aint>(rank) * count, count, MPI_UNSIGNED, win_ids);
+        MPI_Win_fence(0, win_ids);
+        MPI_Win_fence(0, win_dist);
+        MPI_Win_free(&win_ids);
+        MPI_Win_free(&win_dist);
     } else {
-        int arr[] = {64, 128, 256, 512};
-        nlists.assign(arr, arr + 4);
-    }
-    int nprobe_full[] = {1, 2, 4, 8, 16, 32};
-    int nprobe_quick[] = {1, 4, 8, 16, 32};
-    int nprobe_smoke[] = {1, 4, 8, 16};
-    const int* nprobe_vals = nprobe_full;
-    size_t nprobe_count = 6;
-    if (cfg.smoke || cfg.arm_quick) {
-        nprobe_vals = nprobe_smoke;
-        nprobe_count = 4;
-    } else if (cfg.quick) {
-        nprobe_vals = nprobe_quick;
-        nprobe_count = 5;
-    }
-
-    for (size_t ni = 0; ni < nlists.size(); ++ni) {
-        IVFIndex ivf;
-        long long build_t0 = now_us();
-        build_ivf_index(data.base, data.base_n, data.dim, nlists[ni], ivf,
-                        (cfg.smoke || cfg.arm_quick) ? 8 : 15);
-        double build_sec = (now_us() - build_t0) / 1000000.0;
-        for (size_t pi = 0; pi < nprobe_count; ++pi) {
-            for (size_t ti = 0; ti < threads.size(); ++ti) {
-                double lat = 0.0, rec = 0.0;
-                ivf_query_parallel(ivf, data.base, data.query, data.gt, nq, kRecallAt,
-                                   data.gt_dim, nprobe_vals[pi], threads[ti], lat, rec);
-                writer.row("IVF", compact_param("nl", nlists[ni]), threads[ti],
-                           "nprobe", nprobe_vals[pi], lat, rec, base_lat / lat,
-                           0.0, build_sec);
-            }
-            if (nprobe_vals[pi] == 4 || nprobe_vals[pi] == 8 || nprobe_vals[pi] == 16) {
-                double lat = 0.0, rec = 0.0;
-                ivf_query_parallel(ivf, data.base, data.query, data.gt, nq, kRecallAt,
-                                   data.gt_dim, nprobe_vals[pi], 1, lat, rec);
-                writer.row("IVF-Breakdown", compact_param("nl", nlists[ni]), 1,
-                           "nprobe", nprobe_vals[pi], lat, 0.0, 0.0, 0.0, build_sec);
-            }
-            if (nlists[ni] >= 128 && !pq.codes.empty()) {
-                TimingAvg tim;
-                double lat = 0.0, rec = 0.0;
-                ivf_pq_query_parallel(ivf, pq, data.base, data.query, data.gt,
-                                      nq, kRecallAt, data.gt_dim, nprobe_vals[pi],
-                                      1000, threads[0], lat, rec, &tim);
-                writer.row("IVF-PQ", compact_param("nl", nlists[ni]), threads[0],
-                           "nprobe", nprobe_vals[pi], lat, rec, base_lat / lat,
-                           pq_index_size_mb(pq), build_sec, &tim,
-                           "global_pq_M16_p1000");
-            }
-        }
-
-        if (!cfg.smoke && !cfg.arm_quick && nlists[ni] <= 128) {
-            IVFIndex local_ivf = ivf;
-            long long local_build_t0 = now_us();
-            build_ivf_pq(local_ivf, data.base, 8, 256, 64,
-                         std::max(4, cfg.kmeans_iters / 2));
-            double local_build_sec = build_sec + (now_us() - local_build_t0) / 1000000.0;
-            int local_pq_clusters = 0;
-            for (size_t ci = 0; ci < local_ivf.pq_indices.size(); ++ci) {
-                if (!local_ivf.pq_indices[ci].codes.empty()) ++local_pq_clusters;
-            }
-            int local_nprobe_vals[] = {4, 8, 16, 32};
-            int local_threads[] = {1, 8, 32};
-            for (size_t pi = 0; pi < sizeof(local_nprobe_vals) / sizeof(local_nprobe_vals[0]); ++pi) {
-                for (size_t ti = 0; ti < sizeof(local_threads) / sizeof(local_threads[0]); ++ti) {
-                    TimingAvg tim;
-                    double lat = 0.0, rec = 0.0;
-                    ivf_pq_local_query_parallel(local_ivf, data.base, data.query, data.gt,
-                                                nq, kRecallAt, data.gt_dim,
-                                                local_nprobe_vals[pi], 500,
-                                                local_threads[ti], lat, rec, &tim);
-                    writer.row("IVF-PQ-Local", compact_param("nl", nlists[ni]),
-                               local_threads[ti], "nprobe", local_nprobe_vals[pi],
-                               lat, rec, base_lat / lat, 0.0, local_build_sec, &tim,
-                               std::string("per_cluster_pq_M8_p500_train64; pq_clusters=") +
-                                   std::to_string(local_pq_clusters));
-                }
-            }
-        }
+        MPI_Gather(local_dist.data(), count, MPI_FLOAT,
+                   rank == 0 ? all_dist.data() : nullptr, count, MPI_FLOAT,
+                   0, MPI_COMM_WORLD);
+        MPI_Gather(local_ids.data(), count, MPI_UNSIGNED,
+                   rank == 0 ? all_ids.data() : nullptr, count, MPI_UNSIGNED,
+                   0, MPI_COMM_WORLD);
     }
 }
 
-void run_hnsw_experiments(const BenchmarkData& data,
-                          size_t nq,
-                          const std::vector<int>& threads,
-                          double base_lat,
-                          ResultWriter& writer) {
-    std::cout << "\n=== Optional HNSW pthread query parallel sweep ===\n";
-    InnerProductSpace ipspace(static_cast<int>(data.dim));
-    HierarchicalNSW<float> hnsw(&ipspace, data.base_n, 16, 100);
-    long long build_t0 = now_us();
-    build_hnsw_index(data.base, data.base_n, data.dim, 16, 100, ipspace, hnsw);
-    double build_sec = (now_us() - build_t0) / 1000000.0;
-    int ef_vals[] = {16, 32, 64, 128};
-    for (size_t ei = 0; ei < sizeof(ef_vals) / sizeof(ef_vals[0]); ++ei) {
-        for (size_t ti = 0; ti < threads.size(); ++ti) {
-            int nt = threads[ti];
-            double lat = 0.0, rec = 0.0;
-            hnsw_query_stdthread(hnsw, data.query, data.gt, nq, data.dim,
-                                 kRecallAt, data.gt_dim, ef_vals[ei], nt,
-                                 lat, rec);
-            writer.row("HNSW", "StdThread-M16-efC100", nt, "ef", ef_vals[ei],
-                       lat, rec, base_lat / lat, 0.0, build_sec);
-        }
-    }
-}
-
-int run_hnsw_only(const BenchmarkConfig& cfg, const BenchmarkData& data) {
-    ensure_dir("files");
-    ensure_dir("files/results");
-    ResultWriter writer("files/results/pthread_hnsw_results.csv", cfg.target_recall);
-    if (!writer.good()) {
-        std::cerr << "FATAL: cannot open files/results/pthread_hnsw_results.csv\n";
-        return 2;
-    }
-    const size_t nq = std::min(capped_queries(cfg, data), data.gt_n);
-    std::vector<int> threads = thread_values(cfg.smoke || cfg.arm_quick);
-    double base_lat = 0.0, base_rec = 0.0;
-    flat_query_parallel(data.base, data.query, data.gt, data.base_n, data.dim,
-                        data.gt_dim, nq, kRecallAt, kScalarNoVec, 0, 1,
-                        base_lat, base_rec);
-
-    std::cout << "\n=== HNSW advanced-only experiments ===\n";
-    std::cout << "Queries: " << nq << "\n";
-    std::cout << "Selection criterion: minimize latency with recall@100 >= "
-              << cfg.target_recall << "\n";
-
-    InnerProductSpace ipspace(static_cast<int>(data.dim));
-    HierarchicalNSW<float> hnsw(&ipspace, data.base_n, 16, 100);
-    long long build_t0 = now_us();
-    build_hnsw_index(data.base, data.base_n, data.dim, 16, 100, ipspace, hnsw);
-    double build_sec = (now_us() - build_t0) / 1000000.0;
-
-    int ef_vals[] = {32, 64, 128, 256};
-    for (size_t ei = 0; ei < sizeof(ef_vals) / sizeof(ef_vals[0]); ++ei) {
-        int ef = ef_vals[ei];
-        for (size_t ti = 0; ti < threads.size(); ++ti) {
-            int nt = threads[ti];
-            double lat = 0.0, rec = 0.0;
-            hnsw_query_stdthread(hnsw, data.query, data.gt, nq, data.dim,
-                                 kRecallAt, data.gt_dim, ef, nt, lat, rec);
-            writer.row("HNSW-ToolCompare", "StdThread", nt, "ef", ef,
-                       lat, rec, base_lat / lat, 0.0, build_sec,
-                       NULL, "single_index_query_parallel");
-
-            hnsw_query_async(hnsw, data.query, data.gt, nq, data.dim,
-                             kRecallAt, data.gt_dim, ef, nt, lat, rec);
-            writer.row("HNSW-ToolCompare", "StdAsync", nt, "ef", ef,
-                       lat, rec, base_lat / lat, 0.0, build_sec,
-                       NULL, "cpp_standard_async");
-
-        }
-    }
-
-    int entry_vals[] = {1, 2, 4, 8};
-    for (size_t ei = 0; ei < sizeof(entry_vals) / sizeof(entry_vals[0]); ++ei) {
-        double lat = 0.0, rec = 0.0;
-        hnsw_multi_entry_layer0(hnsw, data.query, data.gt, nq, data.dim,
-                                kRecallAt, data.gt_dim, 128, entry_vals[ei],
-                                lat, rec);
-        writer.row("HNSW-IntraQuery", "Layer0MultiEntry", entry_vals[ei],
-                   "ef", 128, lat, rec, base_lat / lat, 0.0, build_sec,
-                   NULL, "entry_count_as_threads; may be negative optimization");
-    }
-
-    int edge_parts[] = {1, 2, 4, 8};
-    for (size_t ei = 0; ei < sizeof(edge_parts) / sizeof(edge_parts[0]); ++ei) {
-        double lat = 0.0, rec = 0.0;
-        hnsw_layer0_edge_partition(hnsw, data.query, data.gt, nq, data.dim,
-                                   kRecallAt, data.gt_dim, 128, edge_parts[ei],
-                                   lat, rec);
-        writer.row("HNSW-IntraQuery", "Layer0EdgePartition", edge_parts[ei],
-                   "ef", 128, lat, rec, base_lat / lat, 0.0, build_sec,
-                   NULL, "level0_edge_index_partition; bottom_graph_only");
-    }
-
-    int point_parts[] = {1, 2, 4, 8};
-    for (size_t pi = 0; pi < sizeof(point_parts) / sizeof(point_parts[0]); ++pi) {
-        double lat = 0.0, rec = 0.0;
-        hnsw_layer0_point_partition(data.base, data.query, data.gt, data.base_n,
-                                    nq, data.dim, kRecallAt, data.gt_dim,
-                                    point_parts[pi], lat, rec);
-        writer.row("HNSW-IntraQuery", "Layer0PointPartition", point_parts[pi],
-                   "partitions", point_parts[pi], lat, rec, base_lat / lat,
-                   0.0, build_sec, NULL,
-                   "exact_partition_of_layer0_points; scans_all_bottom_nodes");
-    }
-
-    IvfHnswIndex ivf_hnsw;
-    long long nested_t0 = now_us();
-    build_ivf_hnsw_index(data.base, data.base_n, data.dim, 16, 16, 100,
-                         cfg.kmeans_iters, ivf_hnsw);
-    double nested_build_sec = (now_us() - nested_t0) / 1000000.0;
-    int nprobe_vals[] = {2, 4, 8, 16};
-    for (size_t pi = 0; pi < sizeof(nprobe_vals) / sizeof(nprobe_vals[0]); ++pi) {
-        for (size_t ti = 0; ti < threads.size(); ++ti) {
-            double lat = 0.0, rec = 0.0;
-            ivf_hnsw_query_parallel(ivf_hnsw, data.query, data.gt, nq,
-                                    kRecallAt, data.gt_dim, nprobe_vals[pi],
-                                    128, threads[ti], lat, rec);
-            writer.row("IVF-HNSW", "nlist16-M16-efC100", threads[ti],
-                       "nprobe", nprobe_vals[pi], lat, rec, base_lat / lat,
-                       0.0, nested_build_sec, NULL,
-                       "nested_ivf_hnsw; each query searches selected shard graphs");
-        }
-    }
-
-    writer.write_best("files/results/pthread_hnsw_best.csv");
-    std::cout << "HNSW advanced best: " << writer.best_summary() << "\n";
-    std::cout << "Results saved to files/results/pthread_hnsw_results.csv\n";
-    return 0;
-}
-
-double run_baseline_and_write(const BenchmarkData& data,
-                              size_t nq,
-                              ResultWriter& writer) {
-    double lat = 0.0, rec = 0.0;
-    flat_query_parallel(data.base, data.query, data.gt, data.base_n, data.dim,
-                        data.gt_dim, nq, kRecallAt, kScalarNoVec, 0, 1, lat, rec);
-    writer.row("Flat-Ablation", "Scalar", 1, "method", 0, lat, rec, 1.0);
-    return lat;
-}
-
-int run_benchmark(const BenchmarkConfig& cfg, const BenchmarkData& data) {
-    ensure_dir("files");
-    ensure_dir("files/results");
-    ResultWriter writer("files/results/pthread_results.csv", cfg.target_recall);
-    if (!writer.good()) {
-        std::cerr << "FATAL: cannot open files/results/pthread_results.csv\n";
-        return 2;
-    }
-
-    const size_t nq = std::min(capped_queries(cfg, data), data.gt_n);
-    std::vector<int> threads = thread_values(cfg.smoke || cfg.arm_quick);
-    std::vector<int> pvals = rerank_values(cfg.smoke || cfg.arm_quick, cfg.quick);
-
-    std::cout << "Benchmark queries: " << nq << "\n";
-    std::cout << "Selection criterion: minimize latency with recall@100 >= "
-              << cfg.target_recall << "\n";
-    double base_lat = run_baseline_and_write(data, nq, writer);
-    std::cout << "Flat Scalar 1T baseline: " << base_lat << " ms/query\n";
-
-    run_flat_experiments(data, nq, threads, base_lat, writer);
-    run_sq_experiments(data, nq, threads, pvals, base_lat, writer);
-
-    PQIndex best_pq;
-    PQFastScanIndex best_fast;
-    run_pq_experiments(data, nq, cfg, threads, pvals, base_lat, writer, best_pq, best_fast);
-    run_ivf_experiments(data, nq, cfg, threads, base_lat, best_pq, writer);
-    if (cfg.with_hnsw) {
-        run_hnsw_experiments(data, std::min<size_t>(nq, 50), threads, base_lat, writer);
-    }
-
-    writer.write_best("files/results/pthread_best.csv");
-    std::cout << "\nBest candidate: " << writer.best_summary() << "\n";
-    std::cout << "Results saved to files/results/pthread_results.csv\n";
-    return 0;
-}
-
-int run_final(const BenchmarkConfig& cfg, const BenchmarkData& data) {
-    const size_t nq = cfg.quick ? capped_queries(cfg, data)
-                                : std::min(data.query_n, data.gt_n);
-    const int best_m = 16;
-    const int best_ef_construction = 100;
-    const int best_ef = 64;
-#if defined(__aarch64__) || defined(__ARM_NEON) || defined(__ARM_NEON__)
-    const int best_threads = 16;
-    const char* best_method = "HNSW-StdThread";
-#else
-    const int best_threads = cfg.final_threads;
-    const char* best_method = "HNSW-StdAsync";
-#endif
-
-    std::cout << "=== Final pthread ANN path ===\n";
-    std::cout << "selection criterion: minimize latency with recall@100 >= "
-              << cfg.target_recall << "\n";
-    std::cout << "method: " << best_method << " M=" << best_m
-              << " efConstruction=" << best_ef_construction
-              << " ef=" << best_ef
-              << " threads=" << best_threads << "\n";
-
-    long long build_t0 = now_us();
-    InnerProductSpace ipspace(static_cast<int>(data.dim));
-    HierarchicalNSW<float> hnsw(&ipspace, data.base_n, best_m, best_ef_construction);
-    build_hnsw_index(data.base, data.base_n, data.dim, best_m,
-                     best_ef_construction, ipspace, hnsw);
-    double build_sec = (now_us() - build_t0) / 1000000.0;
-
-    double lat = 0.0, rec = 0.0;
-#if defined(__aarch64__) || defined(__ARM_NEON) || defined(__ARM_NEON__)
-    hnsw_query_stdthread(hnsw, data.query, data.gt, nq, data.dim, kRecallAt,
-                         data.gt_dim, best_ef, best_threads, lat, rec);
-#else
-    hnsw_query_async(hnsw, data.query, data.gt, nq, data.dim, kRecallAt,
-                     data.gt_dim, best_ef, best_threads, lat, rec);
-#endif
-
-    ensure_dir("files");
-    ensure_dir("files/results");
-    std::ofstream fout("files/results/pthread_final.csv");
-    fout << "criterion,method,nthreads,param1,param2,latency_us,recall@100,build_sec,index_mb,notes\n";
-    fout << "min latency with recall@100>=" << cfg.target_recall
-         << "," << best_method << "," << best_threads << ",ef," << best_ef << ","
-         << std::fixed << std::setprecision(6) << lat * 1000.0 << ","
-         << rec << "," << build_sec << ",0.000000,"
-         << "M=" << best_m << "; ef_construction=" << best_ef_construction << "\n";
-
-    std::cout << "build time (s): " << std::fixed << std::setprecision(3) << build_sec << "\n";
-    std::cout << "average recall: " << std::setprecision(5) << rec << "\n";
-    std::cout << "average latency (us): " << std::setprecision(2) << lat * 1000.0 << "\n";
-    return 0;
+std::string method_label(const Options& opt) {
+    std::ostringstream os;
+    os << opt.method << "-comm=" << opt.comm
+       << "-tm=" << opt.thread_model
+       << "-kernel=" << opt.kernel_name
+       << "-nl=" << opt.nlist
+       << "-npb=" << opt.nprobe
+       << "-ef=" << opt.ef;
+    return os.str();
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    BenchmarkConfig cfg = parse_config(argc, argv);
-    print_platform();
-    std::cout << "Data dir: " << cfg.data_dir << "\n";
+    Options opt = parse_options(argc, argv);
+    int required = opt.mpi_thread_multiple ? MPI_THREAD_MULTIPLE : MPI_THREAD_FUNNELED;
+    int provided = MPI_THREAD_SINGLE;
+    MPI_Init_thread(&argc, &argv, required, &provided);
 
-    BenchmarkData data;
-    load_benchmark_data(cfg.data_dir, data);
-    std::cout << "DEEP100K: base=" << data.base_n << " dim=" << data.dim
-              << " query=" << data.query_n << " gt_dim=" << data.gt_dim
-              << " metric=recall@100\n";
+    int rank = 0, mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
 
-    if (cfg.final_only) {
-        return run_final(cfg, data);
+    std::vector<float> local_base, query;
+    std::vector<int> gt;
+    size_t global_begin = 0, local_n = 0, dim = 0, nq = 0, gt_dim = 0;
+    double distribute_s = 0.0;
+    distribute_data(opt, rank, mpi_size, local_base, query, gt,
+                    global_begin, local_n, dim, nq, gt_dim, distribute_s);
+
+    if (rank == 0) {
+        std::cout << "MPI ANN method=" << opt.method
+                  << " comm=" << opt.comm
+                  << " kernel=" << opt.kernel_name
+                  << " ranks=" << mpi_size
+                  << " threads=" << opt.threads
+                  << " nbase=" << opt.nbase
+                  << " nq=" << nq
+                  << " dim=" << dim << "\n";
     }
-    if (cfg.hnsw_only || cfg.advanced_only) {
-        return run_hnsw_only(cfg, data);
+
+    double build_t0 = MPI_Wtime();
+    LocalIVFIndex ivf;
+    LocalHNSWIndex hnsw;
+    LocalIVFHNSWIndex ivf_hnsw;
+    if (opt.method == "ivf") {
+        build_local_ivf(local_base, dim, static_cast<uint32_t>(global_begin),
+                        opt.nlist, opt.kmeans_iters, opt.kernel, ivf);
+    } else if (opt.method == "hnsw" || opt.method == "multi-hnsw") {
+        build_local_hnsw(local_base, dim, static_cast<uint32_t>(global_begin),
+                         opt.hnsw_m, opt.ef_construction, hnsw);
+    } else if (opt.method == "ivf-hnsw") {
+        build_local_ivf_hnsw(local_base, dim, static_cast<uint32_t>(global_begin),
+                             opt.nlist, opt.kmeans_iters, opt.hnsw_m,
+                             opt.ef_construction, opt.kernel, ivf_hnsw);
     }
-    return run_benchmark(cfg, data);
+    double local_build_s = MPI_Wtime() - build_t0;
+    double build_s = 0.0;
+    MPI_Reduce(&local_build_s, &build_s, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    double best_latency_ms = std::numeric_limits<double>::infinity();
+    double best_recall = 0.0;
+    double best_search_s = 0.0, best_comm_s = 0.0, best_merge_s = 0.0, best_total_s = 0.0;
+    double best_local_work = 0.0;
+
+    for (int rep = 0; rep < opt.repeat; ++rep) {
+        MPI_Barrier(MPI_COMM_WORLD);
+        double total_t0 = MPI_Wtime();
+        double local_work = 0.0;
+        std::vector<float> local_dist;
+        std::vector<uint32_t> local_ids;
+
+        double search_t0 = MPI_Wtime();
+        if (opt.method == "flat") {
+            search_local_flat_batch(local_base, dim, static_cast<uint32_t>(global_begin),
+                                    query, nq, opt.k, opt.kernel, opt.threads, opt.thread_model,
+                                    local_dist, local_ids);
+            local_work = static_cast<double>(local_n);
+        } else if (opt.method == "hnsw" || opt.method == "multi-hnsw") {
+            search_local_hnsw_batch(hnsw, query, nq, opt.k, opt.ef,
+                                    opt.threads, opt.thread_model, local_dist, local_ids);
+            local_work = static_cast<double>(local_n);
+        } else if (opt.method == "ivf-hnsw") {
+            search_local_ivf_hnsw_batch(ivf_hnsw, query, nq, opt.k, opt.nprobe, opt.ef,
+                                        opt.kernel, opt.threads, opt.thread_model,
+                                        local_dist, local_ids, local_work);
+        } else {
+            search_local_ivf_batch(ivf, local_base, query, nq, opt.k, opt.nprobe,
+                                   opt.kernel, opt.threads, opt.thread_model,
+                                   local_dist, local_ids, local_work);
+        }
+        double local_search_s = MPI_Wtime() - search_t0;
+
+        std::vector<float> all_dist;
+        std::vector<uint32_t> all_ids;
+        double comm_t0 = MPI_Wtime();
+        gather_results(opt, rank, mpi_size, nq, opt.k, local_dist, local_ids, all_dist, all_ids);
+        double comm_s = MPI_Wtime() - comm_t0;
+
+        double recall = 0.0;
+        double merge_s = 0.0;
+        if (rank == 0) {
+            double merge_t0 = MPI_Wtime();
+            merge_rank_results(all_dist, all_ids, mpi_size, nq, opt.k, gt, gt_dim, recall);
+            merge_s = MPI_Wtime() - merge_t0;
+        }
+        double total_s = MPI_Wtime() - total_t0;
+
+        double max_search_s = 0.0, max_comm_s = 0.0, max_work = 0.0, min_work = 0.0;
+        MPI_Reduce(&local_search_s, &max_search_s, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&comm_s, &max_comm_s, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&local_work, &max_work, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&local_work, &min_work, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+
+        if (rank == 0) {
+            double latency_ms = total_s * 1000.0 / static_cast<double>(std::max<size_t>(1, nq));
+            if (latency_ms < best_latency_ms) {
+                best_latency_ms = latency_ms;
+                best_recall = recall;
+                best_search_s = max_search_s;
+                best_comm_s = max_comm_s;
+                best_merge_s = merge_s;
+                best_total_s = total_s;
+                best_local_work = min_work > 0.0 ? max_work / min_work : 0.0;
+            }
+        }
+    }
+
+    if (rank == 0) {
+        std::vector<std::string> header = {
+            "experiment", "method", "kernel", "platform", "mpi_size", "nodes", "ppn",
+            "nthreads", "thread_model", "comm", "nbase", "nq", "k",
+            "nlist", "nprobe", "ef", "latency_ms", "recall@100",
+            "build_sec", "distribute_ms", "search_ms", "comm_ms", "merge_ms",
+            "total_ms", "work_imbalance", "mpi_thread_required",
+            "mpi_thread_provided", "notes"
+        };
+        std::vector<std::string> row = {
+            "MPI-ANN",
+            opt.method,
+            opt.kernel_name,
+            "x86_or_cluster",
+            std::to_string(mpi_size),
+            std::to_string(opt.nodes),
+            std::to_string(opt.ppn),
+            std::to_string(opt.threads),
+            opt.thread_model,
+            opt.comm,
+            std::to_string(opt.nbase),
+            std::to_string(nq),
+            std::to_string(opt.k),
+            std::to_string(opt.nlist),
+            std::to_string(opt.nprobe),
+            std::to_string(opt.ef),
+            f6(best_latency_ms),
+            f6(best_recall),
+            f6(build_s),
+            f6(distribute_s * 1000.0),
+            f6(best_search_s * 1000.0),
+            f6(best_comm_s * 1000.0),
+            f6(best_merge_s * 1000.0),
+            f6(best_total_s * 1000.0),
+            f6(best_local_work),
+            std::to_string(required),
+            std::to_string(provided),
+            method_label(opt) + ";" + (opt.quick ? (opt.smoke ? "smoke" : "quick") : "full")
+        };
+        append_csv_row(opt.csv, header, row);
+        std::cout << "RESULT latency_ms=" << best_latency_ms
+                  << " recall@100=" << best_recall
+                  << " build_sec=" << build_s
+                  << " search_ms=" << best_search_s * 1000.0
+                  << " comm_ms=" << best_comm_s * 1000.0
+                  << " merge_ms=" << best_merge_s * 1000.0
+                  << " csv=" << opt.csv << "\n";
+    }
+
+    MPI_Finalize();
+    return 0;
 }
