@@ -2,11 +2,18 @@ param(
     [string]$Data = $(if ($env:ANN_DATA) { $env:ANN_DATA } else { "D:\Parallel-programming-NKU\anndata" }),
     [string]$Csv = "files\results\mpi_results_x86_windows.csv",
     [switch]$Quick,
+    [switch]$Best,
     [switch]$Clean
 )
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+if ($Best) {
+    $Quick = $false
+    if (-not $PSBoundParameters.ContainsKey("Csv") -and -not $env:CSV) {
+        $Csv = "files\results\mpi_best_run_x86_windows.csv"
+    }
+}
 
 New-Item -ItemType Directory -Force -Path (Split-Path $Csv) | Out-Null
 if ($Clean -and (Test-Path $Csv)) {
@@ -98,6 +105,12 @@ function Run-MpiAnn {
     $launcherPath = if ($launcher.Source) { $launcher.Source } else { $launcher.FullName }
     & $launcherPath @args
     if ($LASTEXITCODE -ne 0) { throw "MPI run failed for method=$Method np=$Np comm=$Comm threads=$Threads nbase=$NBase nprobe=$NProbe" }
+}
+
+if ($Best) {
+    Run-MpiAnn -Np 2 -Method "hnsw" -Comm "nonblocking" -ThreadModel "openmp" -Threads 4 -NBase 100000 -NProbe 64 -Ef 64 -Kernel "simd"
+    Write-Host "MPI best full-data result written to $Csv"
+    exit 0
 }
 
 foreach ($nbase in $bases) {

@@ -1,0 +1,11 @@
+platform_tag,scale_label,method,kernel,mpi_size,nthreads,thread_model,comm,nprobe,ef,latency_ms,recall@100,build_sec,search_ms,comm_ms,merge_ms,work_imbalance,notes
+x86 full,100k base / 1000 queries,hnsw,simd,1,4,openmp,nonblocking,64,64,0.03116,0.95454,6.42305,15.5723,0.1789,15.4087,1.0,hnsw-comm=nonblocking-tm=openmp-kernel=simd-nl=512-npb=64-ef=64;full
+x86 full,100k base / 1000 queries,ivf,simd,8,1,stdthread,blocking,32,64,0.057296,0.96542,0.291472,36.8975,5.334,19.3558,1.036171,ivf-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=32-ef=64;full
+x86 full,100k base / 1000 queries,multi-hnsw,simd,4,1,stdthread,nonblocking,64,32,0.073396,0.9929,1.310574,56.9061,1.6136,16.3527,1.0,multi-hnsw-comm=nonblocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=32;full
+x86 full,100k base / 1000 queries,flat,simd,8,1,stdthread,blocking,512,64,0.19279,1.0,0.0,171.6737,16.516,20.1985,1.0,flat-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=512-ef=64;full
+x86 full,100k base / 1000 queries,ivf-hnsw,simd,8,1,stdthread,nonblocking,32,64,0.248819,0.96542,1.626517,223.837,30.5617,23.2793,1.0,ivf-hnsw-comm=nonblocking-tm=stdthread-kernel=simd-nl=512-npb=32-ef=64;full
+ARM quick,50k base / 300 queries,ivf,simd,4,1,stdthread,blocking,16,64,0.133217,0.456167,1.053782,31.349659,4.163027,8.230925,1.010577,ivf-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=16-ef=64;quick
+ARM quick,50k base / 300 queries,ivf-hnsw,simd,8,1,stdthread,nonblocking,16,128,0.207084,0.460633,1.659129,50.635576,7.259607,10.126114,1.0,ivf-hnsw-comm=nonblocking-tm=stdthread-kernel=simd-nl=512-npb=16-ef=128;quick
+ARM quick,50k base / 300 queries,hnsw,simd,4,2,stdthread,nonblocking,64,64,0.241183,0.5015,3.867501,63.286066,6.83403,8.472443,1.0,hnsw-comm=nonblocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=64;quick
+ARM quick,50k base / 300 queries,multi-hnsw,simd,8,1,stdthread,nonblocking,64,64,0.294215,0.5025,1.633573,76.480865,7.054806,10.074854,1.0,multi-hnsw-comm=nonblocking-tm=stdthread-kernel=simd-nl=512-npb=64-ef=64;quick
+ARM quick,50k base / 300 queries,flat,simd,4,1,stdthread,blocking,512,64,0.598657,0.502733,2e-06,170.378923,5.018711,8.283138,1.0,flat-comm=blocking-tm=stdthread-kernel=simd-nl=512-npb=512-ef=64;quick

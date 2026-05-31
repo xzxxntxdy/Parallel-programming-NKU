@@ -16,24 +16,25 @@
 \usepackage{algpseudocode}
 
 \geometry{margin=2.0cm}
+\setlength{\tabcolsep}{4pt}
 \hypersetup{colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue}
 \captionsetup{font=small,labelfont=bf}
 \setlist[itemize]{nosep,leftmargin=1.6em}
 \setlist[enumerate]{nosep,leftmargin=1.8em}
 \lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single,showstringspaces=false,numbers=left,numberstyle=\tiny}
-\newcommand{\figimg}[1]{\includegraphics[width=0.82\linewidth]{../files/figures/mpi_report/#1.pdf}}
+\newcommand{\figimg}[1]{\includegraphics[width=0.8\linewidth]{../files/figures/mpi_report/#1.pdf}}
 \newcommand{\msq}{ms/query}
 \emergencystretch=2em
 
 \begin{document}
 
 \title{\textbf{基于 MPI 的分布式 ANN 检索并行化}\\
-\large 结合 SIMD、OpenMP 混合并行与图索引组合的实验分析}
+\large 数据分片、混合并行、通信策略与图索引组合分析}
 \author{}
 \date{}
 \maketitle
 \thispagestyle{empty}
-\vspace{-1.5em}
+\vspace{-1.6em}
 \begin{center}
 {\renewcommand{\arraystretch}{1.25}
 \begin{tabular*}{0.82\textwidth}{@{\extracolsep{\fill}}>{\bfseries}l l >{\bfseries}l l@{}}
@@ -42,13 +43,13 @@
 GitHub & \multicolumn{3}{l}{\href{https://github.com/xzxxntxdy/Parallel-programming-NKU}{https://github.com/xzxxntxdy/Parallel-programming-NKU}} \\
 \end{tabular*}}
 \end{center}
-\vspace{0.6em}
+\vspace{0.4em}
 
 \begin{abstract}
 \small
-本文围绕 DEEP100K 向量检索任务实现并分析了 ANN 查询阶段的 MPI 并行化。实现采用数据分片方案：rank 0 读取 base/query/ground truth，base vectors 通过 \texttt{MPI\_Scatterv} 按连续区间分发到各 MPI 进程，query 通过 \texttt{MPI\_Bcast} 广播；每个 rank 在本地分片上构建 IVF 或 HNSW 索引，产生局部 top-100 候选，最终由 rank 0 合并为全局 top-100 并计算 \textbf{recall@100}。在此基础上，实验进一步实现了 Flat、IVF、HNSW、multi-HNSW 与 IVF-HNSW，比较了 blocking/nonblocking/point-to-point/one-sided 通信、\texttt{MPI\_THREAD\_FUNNELED}/\texttt{MPI\_THREAD\_MULTIPLE}、MPI+OpenMP 混合并行以及 scalar/SIMD 距离核。
+本文实现并分析了 DEEP100K 向量检索任务的 MPI 并行 ANN 查询框架。实现采用 base-sharding：rank 0 读取 base/query/ground truth，使用 \texttt{MPI\_Scatterv} 将 base 向量按连续区间分发到各 MPI 进程，使用 \texttt{MPI\_Bcast} 广播 query；每个 rank 在本地分片上构建 IVF 或 HNSW 索引，维护局部 top-100 候选，最后由 rank 0 合并为全局 top-100 并计算 \textbf{recall@100}。在统一框架下实现了 Flat、IVF、HNSW、multi-HNSW 和 IVF-HNSW，并比较 blocking、nonblocking、point-to-point、one-sided、\texttt{MPI\_THREAD\_MULTIPLE}、MPI+OpenMP 混合并行以及 scalar/SIMD 距离核。
 
-本地 x86 正式实验共记录 172 组结果，统一以 \textbf{recall@100 $\ge 0.95$ 下 latency 最小}为选择准则。全量 DEEP100K 上，单进程 OpenMP-HNSW 达到 0.0312~\msq，recall@100 为 0.9545；限定 MPI 并行 rank$\ge2$ 时，2 ranks + 4 OpenMP threads 的 HNSW 达到 0.0330~\msq，recall@100 为 0.9816。IVF 在 8 ranks、nprobe=32 时达到 0.0573~\msq，recall@100 为 0.9654，是倒排索引路径的最优点。实验表明，MPI 数据分片能明显降低本地扫描量，但当局部搜索已很快时，结果通信和全局 merge 会成为主要瓶颈；图索引路径的扩展性受每个 rank 内部 HNSW 搜索代价和 top-k 合并开销共同约束。
+x86 正式评测采用 100k base、1000 query，共 172 组结果；ARM/Kunpeng 结果采用 quick 规模 50k base、300 query，共 111 组结果。由于 ARM quick 只使用一半 base，但仍对照 100k ground truth，Flat 精确扫描的 raw recall@100 上限约为 0.5027，因此 ARM quick 的 recall 用于解释 reduced-base 趋势，不参与最终 recall@100$\ge0.95$ 阈值筛选。x86 full 中，在 recall@100$\ge0.95$ 下整体最低延迟为 HNSW 的 0.0312~\msq；若限定 MPI ranks$\ge2$，2 ranks + 4 OpenMP threads 的 HNSW 达到 0.0330~\msq、recall@100=0.9816；IVF 最优点为 8 ranks、nprobe=32，达到 0.0573~\msq、recall@100=0.9654。阶段计时表明，MPI 分片显著降低本地搜索时间，但进程数增大后通信和全局 merge 的比例上升；ARM quick 中通信占比在 4 ranks 下更明显，说明跨平台性能差异不仅来自 SIMD 指令宽度，也来自核心频率、内存带宽、MPI 运行时和 reduced-base 下的阶段比例。
 \end{abstract}
 
 \tableofcontents
@@ -58,45 +59,37 @@ GitHub & \multicolumn{3}{l}{\href{https://github.com/xzxxntxdy/Parallel-programm
 \section{问题定义与评价指标}
 % =====================================================================
 
-\subsection{ANN 检索目标}
+\subsection{ANN 与 recall@100}
 
-给定向量集合 $X=\{x_1,\ldots,x_N\}\subset \mathbb{R}^d$ 和查询向量 $q$，精确 $k$ 近邻要求返回距离最小的 $k$ 个向量。DEEP100K 使用内积相似度，本文沿用已有 SIMD 阶段的距离定义：
+给定向量集合 $X=\{x_1,\ldots,x_N\}\subset\mathbb{R}^{d}$ 和查询向量 $q$，精确 $k$ 近邻检索返回距离最小的 $k$ 个向量。DEEP100K 使用内积相似度，本文沿用已有 SIMD 阶段的距离定义：
 \begin{equation}
-\delta(q,x)=1-\sum_{i=1}^{d}q_i x_i .
+\delta(q,x)=1-\sum_{i=1}^{d} q_i x_i .
 \end{equation}
-距离越小表示相似度越高。ANN 的目标不是穷尽所有精确候选，而是在可接受召回下减少查询访问的数据量和单 query 延迟。
-
-本文固定 $k=100$，以 recall@100 衡量质量：
+距离越小表示向量越接近。ANN 的目标是在高召回下减少访问向量数和单 query 延迟。本文固定 $k=100$，评价指标为：
 \begin{equation}
 \mathrm{recall@100}(q)=\frac{|R_{100}(q)\cap G_{100}(q)|}{100},
 \end{equation}
-其中 $R_{100}$ 是算法返回结果，$G_{100}$ 是 ground truth。所有正式最优点只在全量 100k base 上比较；25k/50k 规模实验用于观察计算量、通信量和进程数变化趋势。
+其中 $R_{100}(q)$ 是算法返回集合，$G_{100}(q)$ 是 ground truth。所有最终 x86 最优点均按 \textbf{recall@100$\ge0.95$ 下 latency 最小}选择。
 
-\subsection{并行化目标}
+\subsection{quick 规模的解释}
 
-MPI 的核心目标是把 base data 分布到多个进程，使每个进程只搜索自己的本地分片。该策略不会重复完整搜索任务，单 query 的本地计算量从 $O(Nd)$ 降为近似 $O(Nd/P)$。代价是每个 query 需要收集 $P$ 个局部 top-100，然后做全局 merge。对 IVF 而言，单 rank 的主要计算复杂度为
-\begin{equation}
-O(nlist\cdot d+nprobe\cdot \bar{L}\cdot d),
-\end{equation}
-其中 $\bar{L}$ 是本地倒排链平均长度。通信和 merge 复杂度为
-\begin{equation}
-O(Pkd) \text{ 的候选距离/编号传输近似为 } O(Pk), \quad O(Pk\log k)
-\end{equation}
-的堆式合并。由于 $k=100$ 固定，增大 $P$ 后本地搜索下降，但通信和 merge 会逐步显现。
+ARM/Kunpeng 侧采用 quick sweep。该模式将 base 限制为 50k，query 限制为 300，但 ground truth 仍来自完整 DEEP100K 100k base。因此即使使用 Flat 精确扫描，也只能命中 ground truth 中落在前 50k base 的部分；当前 ARM quick 中 Flat raw recall@100 为 0.502733，构成该 reduced-base 设置下的上限。报告中 ARM quick 不用于证明最终 recall 阈值，而用于分析跨平台趋势、MPI 扩展性、通信占比、OpenMP 混合并行和 SIMD 可移植性。
+
+这种处理保留了两类结论：x86 full 给出正式 recall-latency 最优选择；ARM quick 给出同一代码在 AArch64/NEON 环境下的相对性能趋势。为了避免混淆，下文所有双平台图都明确标注 x86 full 100k/1000 与 ARM quick 50k/300。
 
 % =====================================================================
-\section{MPI 数据划分与全局 top-k 合并}
+\section{MPI 任务分配与全局 top-k 合并}
 % =====================================================================
 
-\subsection{数据分发策略}
+\subsection{base-sharding 数据划分}
 
-实现采用 base-sharding 而不是 query-sharding。rank 0 负责读取数据集元信息、base、query 和 ground truth，然后广播矩阵规模。base data 按连续区间切分，每个 rank 获得 $[l_r,r_r)$ 区间：
+实现选择按 base data 划分，而不是按 query 划分。rank 0 读取数据集并广播矩阵元信息，base data 按连续区间切成 $P$ 份：
 \begin{equation}
-|X_r|\in\left\{\left\lfloor \frac{N}{P}\right\rfloor,\left\lceil \frac{N}{P}\right\rceil\right\}.
+|X_r|\in\left\{\left\lfloor \frac{N}{P}\right\rfloor,\left\lceil \frac{N}{P}\right\rceil\right\},
 \end{equation}
-这种划分的优势是分片大小天然均衡，全局 id 可以由 \texttt{global\_begin + local\_id} 得到，不需要额外 id 映射表。query 被广播到所有 rank，保证每个 rank 对相同 query 产生局部候选。
+其中 $P$ 为 MPI ranks。每个 rank 的全局 id 可由 \texttt{global\_begin + local\_id} 得到，因此无需额外 id 映射。query 和 ground truth 被广播到所有 rank，保证所有 rank 对同一批 query 搜索自己的本地分片。
 
-在代码中，该流程由 \texttt{distribute\_data} 完成。关键 MPI 操作包括：
+主要数据分发代码如下：
 \begin{lstlisting}[language=C++]
 MPI_Bcast(meta, 4, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
 MPI_Bcast(query.data(), query.size(), MPI_FLOAT, 0, MPI_COMM_WORLD);
@@ -105,139 +98,215 @@ MPI_Scatterv(root_base, counts, displs, MPI_FLOAT,
              local_base.data(), counts[rank], MPI_FLOAT, 0, MPI_COMM_WORLD);
 \end{lstlisting}
 
-query-sharding 的通信量更低，但每个 query 只会在单个 rank 上被搜索，除非每个 rank 都保存完整索引，否则无法得到全局 top-k。本文选择 base-sharding，是为了保证召回定义和单机版本一致，同时明确暴露通信、merge 与负载均衡问题。
+主程序的执行流按“解析参数、初始化 MPI 线程级别、分发数据、本地建索引、批量查询、候选回收、全局合并、评价 recall”组织。MPI 初始化使用 \texttt{MPI\_Init\_thread}，根据命令行选择 FUNNELED 或 MULTIPLE；当前核心搜索线程不直接进入 MPI，因此默认结构符合 FUNNELED 的通信边界。数据加载只发生在 rank 0，其余 rank 通过广播获得 query 和 ground truth，通过 \texttt{MPI\_Scatterv} 获得本地 base 分片。这样既避免每个进程重复读取完整数据，也使本地索引构建严格绑定到自己的数据分片。
 
-\subsection{局部候选维护与全局合并}
+实现上，参数解析在进入 \texttt{MPI\_Init\_thread} 前完成，保证每个 rank 使用相同的算法、通信、线程和 kernel 设置。数据分发阶段只把完整 base 保留在 root 临时对象中，\texttt{MPI\_Scatterv} 完成后非 root 从未持有全量 base，root 也只在分发阶段需要完整输入。每个 rank 的本地分片使用连续 \texttt{std::vector<float>} 保存，后续 Flat 顺序扫描、IVF 建倒排链和 HNSW 插入都直接以 \texttt{base + local\_id * dim} 定位向量。这个布局避免了跨 rank 共享指针，也让同一套本地索引接口能够在 Windows/MS-MPI 和 Linux/OpenMPI/MPICH 环境中复用。
 
-每个 rank 对每个 query 维护固定大小的 top-100 最大堆。堆顶保存当前候选中距离最大的元素，当新候选距离更小时替换堆顶。局部结果被转成两个固定长度数组：\texttt{local\_dist[nq*k]} 和 \texttt{local\_ids[nq*k]}。固定长度布局使 gather 通信不需要额外交换每个 query 的候选数，便于比较不同 MPI 通信方式。
+如果采用 query-sharding，每个进程只处理一部分 query，但必须复制完整 base 或完整索引，否则无法得到全局 top-k。复制索引会增加内存占用，并且多个进程重复搜索相同数据结构，不适合体现 MPI 数据并行。base-sharding 的代价是每个 query 需要汇总多个 rank 的局部候选，但结果语义与单机全量检索一致。
+
+数据划分采用连续均分，而不是随机划分或启发式划分。连续划分的优点是每个 rank 的全局 id 区间可以直接由 \texttt{global\_begin} 推出，分发时只需要一次 \texttt{MPI\_Scatterv}，也便于检查各 rank 数据量是否均衡。随机划分可能改善某些分布偏斜数据上的局部索引质量，但需要额外保存 id 映射并打乱连续内存访问；启发式划分如按 centroid 或图社区划分可能降低无效搜索，但需要全局训练或预处理，通信和实现复杂度更高。DEEP100K 在当前规模下连续均分已经使各 rank 数据量几乎一致，因此本文将随机/启发式划分作为复杂性对照，而不作为默认实现。
+
+从复杂度看，base-sharding 将扫描型检索的主计算从 $O(Nd)$ 降为每 rank 约 $O(Nd/P)$，但引入 query 广播和候选回收。由于 query 矩阵规模为 $n_qd$，广播量与 base 无关；候选回收规模为 $O(Pn_qk)$，与返回候选数和 rank 数线性相关。对 DEEP100K 的 $d=96,k=100$ 而言，通信负载并不大，真正容易增长的是 root 对 $P\times k$ 候选的合并和同步等待。因此任务划分的核心矛盾不是“能否减少计算”，而是“减少的本地搜索时间是否大于新增的通信和 merge 时间”。
+
+也可以设想按矩阵维度做 vertical split，即每个 rank 只保存向量的部分维度并计算局部内积，然后通过 \texttt{MPI\_Reduce} 汇总完整距离。该策略能保持每个 rank 都看到全量候选，但每个 query 对所有 base 点都需要跨进程规约，通信量接近 $O(Nn_q)$，远大于 top-k 候选回收，不适合本实验规模。按 inverted list 或 centroid 划分则更接近全局 IVF：每个 rank 负责部分簇，query 只访问被选中的簇。它能减少无关 rank 的工作，但必须同步全局 centroid，并处理簇长度不均导致的负载倾斜。本文选择 base-sharding，是在实现稳定性、结果一致性和 MPI 通信代价之间的折中。
+
+\subsection{局部候选与全局 merge}
+
+每个 rank 对每个 query 维护一个固定容量 top-100 最大堆。新候选距离小于堆顶时替换堆顶；搜索结束后将堆转换为定长数组 \texttt{local\_dist[nq*k]} 和 \texttt{local\_ids[nq*k]}。定长布局使 \texttt{MPI\_Gather}、\texttt{MPI\_Igather}、p2p 和 one-sided 版本可以共享结果格式。
+
+局部 top-k 的维护使用“距离越小越优”的最大堆：堆顶保存当前最差候选，插入新候选时只需与堆顶比较。堆大小固定为 $k=100$，因此每个候选的维护代价为 $O(\log k)$，且 $k$ 很小。搜索结束后，候选会被展开为连续数组而不是直接发送 C++ 容器，这是因为 MPI 只能高效传输连续内存。距离数组和 id 数组分开发送，可以避免自定义 MPI 结构体带来的 padding 和跨平台对齐问题，也便于 one-sided 通信直接按偏移写入 root 窗口。
+
+\texttt{heap\_to\_fixed\_arrays} 会把每个 query 的局部堆排序后写入固定长度段；若某个局部索引返回不足 100 个候选，则用 \texttt{inf} 距离和无效 id 填充。root 合并时会跳过无效 id，因此所有通信分支都能使用同样的 \texttt{nq*k} 发送计数。这样牺牲了一点填充空间，但换来了稳定的 MPI 调用参数和统一的 recall 计算流程。对本文的 $n_q=1000,k=100,P\le8$ 来说，候选数组大小远小于 base/query 数据，固定布局的额外空间可以接受。
 
 \begin{algorithm}[H]
-\caption{MPI base-sharding ANN 查询}
+\caption{MPI base-sharding ANN 查询流程}
 \small
 \begin{algorithmic}[1]
 \State rank 0 loads base/query/ground truth.
-\State Broadcast query and metadata; scatter base shards to all ranks.
-\State Each rank builds local IVF/HNSW index on its shard.
-\For{query $q$}
-  \State each rank searches local index and keeps local top-100 heap.
+\State Broadcast query and metadata; scatter base shards to ranks.
+\State Each rank builds local IVF or HNSW index.
+\For{each query $q$}
+  \State Each rank searches only its local shard and keeps local top-100.
 \EndFor
-\State Gather fixed local candidates to rank 0.
+\State Gather local candidates to rank 0.
 \State rank 0 merges $P\times 100$ candidates per query into global top-100.
-\State rank 0 computes recall@100 using ground truth.
+\State rank 0 evaluates recall@100.
 \end{algorithmic}
 \end{algorithm}
 
-全局 merge 仍使用堆维护 top-100。该合并逻辑只依赖候选距离和全局 id，因此 Flat、IVF、HNSW、multi-HNSW、IVF-HNSW 共享同一套结果汇总路径。CSV 同时记录 \texttt{search\_ms}、\texttt{comm\_ms}、\texttt{merge\_ms}，后文的 profiling 分析直接来自这些阶段计时。
+全局 merge 对每个 query 处理 $P\times k$ 个候选，复杂度为 $O(Pk\log k)$。由于 $k=100$ 固定，merge 的绝对成本不高，但当本地搜索被 MPI 和 SIMD 明显压缩后，merge 会成为越来越明显的串行部分。端到端延迟可以近似拆为
+\[
+T(P)\approx \max_r T_{\mathrm{local},r}+T_{\mathrm{comm}}(Pn_qk)+T_{\mathrm{merge}}(Pn_qk),
+\]
+其中第一项随 $P$ 增大下降，后两项随 $P$ 增大上升。若本地索引是 Flat 或 IVF，$\max_rT_{\mathrm{local},r}$ 占主导，MPI 分片收益明显；若本地索引已是 HNSW，单 rank 搜索已经很短，增加 rank 后更容易被候选合并和同步抵消。这个模型解释了为什么 HNSW 的全局最低点出现在 P1T4，而 MPI 多进程条件下的最优点是 P2T4。
+
+一致性由两层保证。第一，rank 内返回的 id 是全局 id，因此不同 rank 的候选可以直接比较和合并；第二，所有 rank 返回 top-100 而不是变长候选，保证任何落在某个 rank 本地 top-100 内的真实近邻不会在通信前被截断。对于 Flat，这等价于精确全局 top-100；对于 IVF/HNSW，误差只来自本地 ANN 搜索没有访问到某些候选，而不是 MPI merge 过程改变了距离排序。
+
+阶段计时把 build、distribute、search、comm、merge 和 total 分开。search、comm 等本地阶段先在各 rank 计时，再用 \texttt{MPI\_Reduce} 取最大值作为该阶段的并行关键路径；merge 只在 root 发生，因此直接使用 root 端耗时。这样处理比简单平均各 rank 时间更接近用户实际等待时间，也能暴露某个 rank 较慢导致的尾部等待。负载均衡用各 rank 搜索工作量最大值与最小值之比衡量，用于判断瓶颈来自数据不均还是来自通信和合并。
+
+每组实验可重复运行多次并取端到端 latency 的稳定最优值，以降低 Windows 后台调度和集群共享环境对单次测量的扰动。build 时间不参与每 query latency 的筛选；这是因为实验关注在线查询吞吐，但构建成本仍用于分析 HNSW、IVF 和 IVF-HNSW 在离线索引阶段的差异。
 
 % =====================================================================
-\section{本地索引与并行实现}
+\section{本地索引与混合并行实现}
 % =====================================================================
 
 \subsection{Flat 与 SIMD 距离核}
 
-Flat 路径用于串行和 MPI 精确扫描基线。每个 rank 顺序扫描自己的本地 base 分片，距离计算调用 \texttt{ann::ip\_distance}。为了分析 SIMD 对 MPI 版本的贡献，程序增加了 \texttt{--kernel} 参数：
+Flat 是精确扫描基线。每个 rank 只扫描自己的本地分片，距离计算调用 \texttt{ann::ip\_distance}。程序通过 \texttt{--kernel} 控制距离核：
 \begin{itemize}
-    \item \texttt{scalar}: 禁止编译器自动向量化的标量内积；
-    \item \texttt{auto}: 交给编译器自动向量化；
-    \item \texttt{simd}: x86 上选择 AVX，ARM 上选择 NEON unroll4，其他平台退化到自动向量化。
+    \item \texttt{scalar}: 禁止自动向量化的标量内积；
+    \item \texttt{auto}: 编译器自动向量化；
+    \item \texttt{simd}: x86 选择 AVX/AVX2，ARM 选择 NEON unroll4，其余平台回退到自动向量化。
 \end{itemize}
-x86 Windows 构建使用 \texttt{/arch:AVX2}，Linux/ARM 使用 \texttt{-march=native}。这样同一份 MPI 代码可以在 x86 与 ARM 上走对应 SIMD 路径。
+x86 Windows 编译使用 \texttt{/O2 /arch:AVX2 /openmp}；Linux/ARM 使用 \texttt{-O3 -fopenmp -march=native}。这使 MPI 主程序在不同平台上复用同一套搜索逻辑，只改变编译器和指令后端。
 
-\subsection{IVF: 本地倒排索引与 nprobe 消融}
+Flat 的实现故意保持简单：外层遍历 query，内层顺序扫描本地 base，候选进入固定大小堆。这个版本用于三个目的。第一，它验证 MPI 分片和全局 merge 是否正确，因为 Flat 在 full base 上应达到 recall@100=1.0；第二，它给 SIMD 距离核提供最纯粹的压力测试，绝大部分时间都花在内积；第三，它为 IVF/HNSW 的近似结果提供延迟和召回参照。优化过程中先保证 Flat 的分片与 merge 正确，再把同一套候选格式复用到 IVF 和 HNSW，降低后续算法分支出错的可能性。
 
-IVF 在每个 rank 的本地分片上独立构建倒排索引。构建阶段使用本地 k-means 初始化和迭代，搜索阶段先计算 query 到本地所有 centroid 的距离，选择最近的 \texttt{nprobe} 个倒排链，再扫描链中向量。该设计没有跨 rank 的全局 centroid 同步，构建成本低、通信路径简单，但不同 rank 的局部簇边界不完全一致。因此 IVF 的有效搜索宽度不仅由 \texttt{nprobe} 决定，也受数据分片影响。
+距离核在接口层只暴露 \texttt{ann::ip\_distance}，上层索引不需要关心 AVX2、NEON 或标量实现。x86 的手写 AVX 路径按 8 个 float 一组累加，ARM NEON 路径按 4 个 float 一组并做 unroll，尾部维度回退到标量循环。由于 DEEP100K 维度为 96，主循环基本不受尾部处理影响。这个封装使 Flat、IVF centroid 选择、IVF 链内扫描和 IVF-HNSW 的 probe 选择使用相同距离语义，避免不同算法分支因 kernel 不一致产生不可比较的 recall。
 
-搜索函数 \texttt{search\_local\_ivf\_batch} 在 query 维度上并行。每个 query 内部的倒排链访问保持顺序，减少锁和跨线程堆合并开销。平均访问候选数被记录为 \texttt{local\_work}，再通过 \texttt{MPI\_Reduce} 得到 work imbalance。全量实验中 IVF 的 work imbalance 约为 1.03，说明连续切分下各 rank 的访问量比较接近，主要瓶颈不在数据量倾斜，而在通信与 merge。
+\subsection{IVF 本地倒排索引}
 
-\subsection{HNSW 与 MPI 图索引组合}
+IVF 在每个 rank 的本地分片上独立构建 k-means centroid 和 inverted lists。搜索时先计算 query 到本地所有 centroid 的距离，选择最近的 \texttt{nprobe} 个倒排链，然后扫描链内向量并维护局部 top-100。单 rank 的主要计算量可近似写作：
+\begin{equation}
+O(nlist\cdot d+nprobe\cdot \bar{L}\cdot d),
+\end{equation}
+其中 $\bar{L}$ 为本地倒排链平均长度。MPI 分片后 $\bar{L}$ 近似降为单机的 $1/P$，因此 IVF 对 ranks 增加较敏感。实现中没有跨 rank 同步全局 centroid，这减少了构建通信，但局部簇边界在各 rank 中不同；该设计更接近分布式局部索引，而不是全局 IVF 的并行扫描。
 
-图索引部分实现三条路径。第一条是 HNSW：每个 rank 在本地分片上构建一个 HNSW，搜索同一 query 后由 rank 0 合并。第二条是 multi-HNSW：数据集被 MPI 分片后形成多个 HNSW，概念上等价于每个 rank 负责一个子图。第三条是 IVF-HNSW：每个 rank 先构建本地 IVF，再在每个倒排簇内建立 HNSW，搜索时先筛选 \texttt{nprobe} 个簇，再在簇内图上搜索。
+局部 IVF 的优势是构建与查询都只依赖本地数据，MPI 通信只发生在输入分发和候选回收阶段；缺点是各 rank 的 centroid 不共享，nprobe 的语义变为“每个局部索引访问 nprobe 个簇”。因此当 rank 数增加时，总访问簇数约为 $P\cdot nprobe$，但每个簇更短。实验中 IVF P8 nprobe=32 成为最优点，说明短倒排链带来的本地搜索下降超过了访问更多局部簇和 merge 的成本；继续增大 nprobe 后 recall 接近饱和，扫描量和堆维护反而成为主要开销。
 
-HNSW 的优势是访问点数量远少于 IVF 扫描，在 recall@100 阈值附近可以取得最低延迟。其代价是构建时间明显高于 Flat/IVF，且 query 内部搜索带有图遍历依赖，难以像矩阵扫描那样细粒度拆分。本文因此采用 query-level OpenMP 并行：同一 rank 内多个 query 并发进入本地 HNSW，避免在单 query 图遍历中引入高同步开销。
+IVF 构建采用本地 k-means：先在本地分片上初始化 centroid，再迭代分配样本和更新中心。由于每个 rank 的训练样本不同，centroid 只代表本地分布；查询时每个 rank 独立选取自己的最近簇，并把最终候选交给 root 合并。实现上，倒排链保存本地向量 id，搜索阶段再转换为全局 id。这个设计牺牲了全局 centroid 的一致性，但避免每轮 k-means 都进行跨 rank all-reduce，适合本实验强调的查询并行和通信方法对比。优化过程中的关键参数是 nprobe：它直接控制候选覆盖面，是 IVF recall-latency 曲线的主轴。
 
-\subsection{MPI + OpenMP 混合并行}
+\texttt{top\_probe\_ids} 先计算 query 到本地所有 centroid 的距离，再用 \texttt{nth\_element} 取前 \texttt{nprobe} 个簇，最后对 probe 结果排序。相比完整排序，\texttt{nth\_element} 把 centroid 选择从 $O(nlist\log nlist)$ 降到平均 $O(nlist)$，在 nlist=512 时虽然不是主耗时，但能减少每个 query 的固定开销。链内扫描仍使用连续的 \texttt{local\_base}，倒排链只保存 \texttt{uint32\_t} 本地 id，因此候选访问不需要复制向量。nprobe 增大时，被访问倒排链数量和候选扫描量同步上升，这也是 IVF 延迟随 nprobe 近似线性增长的直接原因。
 
-混合并行由 \texttt{parallel\_for\_queries} 统一封装。当 \texttt{--thread-model openmp} 时，使用：
+\subsection{HNSW、multi-HNSW 与 IVF-HNSW}
+
+HNSW 路径在每个 rank 的本地分片上构建一个图索引。multi-HNSW 是该结构在 MPI 数据分片下的直接解释：多个 rank 各自维护一个 HNSW 子图，query 同时搜索多个子图后合并 top-k。IVF-HNSW 先构建本地 IVF，再在每个倒排簇内构建 HNSW；搜索时先用 centroid 选择簇，再在多个簇内图搜索。
+
+图索引的查询开销远低于线性扫描，但构建开销更高，且 query 内部图遍历存在依赖，不适合轻易拆成细粒度并行。本文采用 query-level 并行，让同一 rank 内多个 query 并行进入 HNSW，避免在单 query 的图遍历步骤上引入锁和同步。
+
+HNSW 的查询路径由当前入口点和候选优先队列逐步决定，后一步依赖前一步访问到的邻居集合。若将单 query 内的边或点强行并行化，需要多个线程共享 visited 集合和候选队列，锁竞争会发生在最频繁的数据结构上；若复制 visited 集合，则不同线程会重复扩展相同区域，候选一致性也需要额外合并。multi-HNSW 避开了单图内部同步，把并行粒度放到多个分片图之间，语义更简单，但代价是每个分片图都要独立搜索并返回候选。
+
+图索引实现分为三条路径。直接 HNSW 在每个 rank 的分片上构图，查询返回本地 top-100；当 $P=1$ 时它就是单图 HNSW，当 $P>1$ 时多个局部图并行搜索后合并。multi-HNSW 强调“多个分片图共同提供候选覆盖”，用于观察数据集划分后图索引的 recall 提升和 merge 成本。IVF-HNSW 则先用 IVF 缩小候选簇，再在簇内使用 HNSW，希望把簇过滤和图搜索结合起来。实验结果表明该组合在当前规模下常数开销偏大，说明优化不能只叠加索引结构，还要看每层过滤是否真正减少了足够多的距离计算或图访问。
+
+HNSW 构建阶段把 label 直接设置为全局 id，因此 root 合并时不需要再做局部 id 到全局 id 的映射。索引构建完成后查询阶段不再插入或删除点，OpenMP/std::thread 只执行只读搜索；\texttt{ef} 在 batch 搜索前统一设置，避免每个 query 在线程内部频繁修改图索引参数。IVF-HNSW 中每个非空倒排簇都会创建一个小 HNSW，查询时对 \texttt{nprobe} 个簇分别调用 \texttt{searchKnn} 并再做本地 top-100 合并。这个实现能直接反映嵌套结构的真实成本：簇选择、多个小图入口、多个候选堆和最终 MPI merge 都会计入端到端 latency。
+
+\subsection{OpenMP 与 std::thread}
+
+进程内并行由 \texttt{parallel\_for\_queries} 封装。OpenMP 版本使用 dynamic schedule：
 \begin{lstlisting}[language=C++]
 #pragma omp parallel for num_threads(threads) schedule(dynamic)
 for (long long qi = 0; qi < (long long)nq; ++qi) {
     search_one_query(qi);
 }
 \end{lstlisting}
-当 \texttt{--thread-model stdthread} 时，使用 C++ worker 线程按 query id 交错分配任务。OpenMP 的 dynamic schedule 更适合 HNSW，因为不同 query 的图遍历步数存在波动；IVF 的负载更稳定，线程调度开销相对更显著。
+C++ 标准线程版本按 query id 交错分配任务。IVF 的每个 query 访问候选数较稳定，线程调度开销相对显著；HNSW 的图遍历步数随 query 波动，dynamic schedule 更容易改善尾部等待。
+
+线程模型上，OpenMP 用于批量 query 的循环调度，适合通过编译选项快速切换线程数；\texttt{std::thread} 用作显式线程管理基线，Linux/AArch64 环境下由标准库落到 POSIX thread 运行时，Windows 环境下由 C++ 运行时映射到系统线程。两者都保持“工作线程只执行本地搜索、主线程执行 MPI 通信”的结构，因此不会改变 MPI 通信语义，也便于单独比较线程调度代价。
+
+线程管理代价主要由三部分组成：线程创建和销毁、任务调度、以及多个线程同时访问本地索引造成的 cache 竞争。OpenMP 在循环区域内复用线程池，适合本文这种 batch query；\texttt{std::thread} 版本显式创建固定数量线程并交错分配 query，调度逻辑可控，但缺少 OpenMP dynamic schedule 对尾部任务的自动平衡。HNSW 单个 query 的访问步数波动大，dynamic schedule 的收益更明显；IVF 每个 query 的 nprobe 固定，任务时间更均匀，过多线程时调度收益会被 cache 和内存带宽竞争抵消。
+
+线程边界被限制在本地 batch search 内部：每个线程只写自己负责 query 对应的连续候选区间，即从 \texttt{qi*k} 起始的 100 个距离和 id，不共享候选堆，也不直接调用 MPI。这样可以避免候选堆加锁，并让 FUNNELED 线程级别满足主流程需求。对 HNSW 来说，线程共享的是构建后的只读图结构；对 IVF 来说，线程共享 centroid、倒排链和 base 数组，但每个 query 的 probe 列表、visited 计数和 top-k 堆都是线程局部对象。
 
 \subsection{MPI 通信模式}
 
-局部结果回收实现了四种通信模式：
+局部结果回收实现了四种方式：
 \begin{itemize}
-    \item \textbf{blocking}: 使用 \texttt{MPI\_Gather} 收集距离数组和 id 数组；
-    \item \textbf{nonblocking}: 使用两次 \texttt{MPI\_Igather} 并 \texttt{MPI\_Waitall}；
-    \item \textbf{point-to-point}: 非 root rank 用 \texttt{MPI\_Send}，root 用 \texttt{MPI\_Recv}；
+    \item \textbf{blocking}: 使用 \texttt{MPI\_Gather} 收集距离和 id；
+    \item \textbf{nonblocking}: 使用两次 \texttt{MPI\_Igather} 后 \texttt{MPI\_Waitall}；
+    \item \textbf{point-to-point}: 非 root rank 使用 \texttt{MPI\_Send}，root 使用 \texttt{MPI\_Recv}；
     \item \textbf{one-sided}: root 创建 \texttt{MPI\_Win}，其他 rank 使用 \texttt{MPI\_Put} 写入窗口。
 \end{itemize}
-此外，程序可通过 \texttt{--mpi-thread-multiple} 请求 \texttt{MPI\_THREAD\_MULTIPLE}，用于比较 MPI 运行时线程支持带来的开销。实际 MS-MPI 返回的 provided 等级为 3，即支持 \texttt{MPI\_THREAD\_MULTIPLE}。
+程序默认请求 \texttt{MPI\_THREAD\_FUNNELED}；额外实验请求 \texttt{MPI\_THREAD\_MULTIPLE}。当前设计中工作线程不直接调用 MPI，MULTIPLE 主要用于测量运行时线程安全支持的额外影响，而不是用于流水线通信。
+
+四种通信方式共享相同的候选布局，因此差异只来自 MPI API 的进度模型和同步方式。blocking 版本简单稳定，所有 rank 在 gather 调用处同步；nonblocking 版本允许提前发起传输，但如果没有后续可重叠计算，最终仍会在 wait 处同步；p2p 版本暴露了 root 逐个接收的顺序，便于实现自定义树形合并；one-sided 版本减少了接收端显式调用，但窗口创建、fence 和内存同步本身也有固定成本。实验保留这些版本，是为了比较 MPI 编程方法对 ANN top-k 回收阶段的实际影响。
+
+通信分支只替换“局部候选回收到 root”的阶段，不改变本地搜索和 root merge。这样做能保证不同通信 API 的实验可比：输入候选相同、候选数量相同、merge 逻辑相同。blocking 版本使用两次 gather 分别收集距离和 id；nonblocking 版本发起两次 igather 并统一等待；p2p 版本让非 root 主动发送，root 按 rank 接收；one-sided 版本由 root 创建窗口，其他 rank 通过 put 写入对应偏移。所有分支结束后 root 得到相同形状的候选矩阵，因此后续 recall 和 latency 差异可以归因于通信阶段，而不是算法分支改变了候选质量。
+
+从实现角度看，通信阶段有两个必须保持不变的约束。第一，距离和 id 必须按同一 rank、同一 query、同一候选位置对齐，否则 root merge 会把距离与错误 id 配对；因此所有分支都采用 \texttt{(rank*nq + qi)*k + j} 的偏移公式。第二，root 必须在 merge 前确认所有 rank 的候选写入完成；blocking 和 p2p 由调用返回保证，nonblocking 由 \texttt{MPI\_Waitall} 保证，one-sided 由第二轮 \texttt{MPI\_Win\_fence} 保证。这些同步点也是通信优化难以绕开的根本原因。
 
 % =====================================================================
 \section{实验设置}
 % =====================================================================
 
-\subsection{平台与编译}
+\subsection{平台与数据}
 
-本地正式实验在 Windows x86 环境完成。处理器为 Intel64 Family 6 Model 183，逻辑处理器数 32；MPI 运行时为 MS-MPI 10.1.12498.16；编译器为 MSVC 19.43，编译选项包含 \texttt{/O2 /arch:AVX2 /openmp /std:c++17}。MPI SDK 与运行时通过本地 Conda 环境提供，路径为 \texttt{.conda-envs/mpi/Library}。
+\begin{table}[H]
+\centering
+\small
+\caption{实验平台与规模}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+平台 & 编译/运行环境 & 数据规模 & 说明 \\
+\midrule
+x86 full & Windows + MSVC 19.43 + MS-MPI 10.1 & 100k base / 1000 query & 正式 recall@100 阈值筛选 \\
+ARM quick & ARM/Kunpeng + mpic++ + OpenMP & 50k base / 300 query & reduced-base 趋势与可移植性分析 \\
+\bottomrule
+\end{tabular}
+}
+\label{tab:platforms}
+\end{table}
 
-正式命令为：
+x86 正式命令为：
 \begin{lstlisting}[language=bash]
 cd ann
 powershell -NoProfile -ExecutionPolicy Bypass -File .\run_mpi_x86.ps1 -Clean
-python .\plot_mpi_report.py
 \end{lstlisting}
-
-ARM/Kunpeng 侧保留 quick/full 命令，编译使用 \texttt{-O3 -fopenmp -march=native}，以便在 AArch64 上自动启用 NEON：
+ARM/Kunpeng quick 命令为：
 \begin{lstlisting}[language=bash]
 cd /home/$USER/ann
 ANN_DATA=/anndata bash run_mpi_arm_kunpeng.sh --quick
-ANN_DATA=/anndata CSV=files/results/mpi_results_arm_kunpeng_full.csv \
-    bash run_mpi_arm_kunpeng.sh --full
 \end{lstlisting}
 
-PBS 集群提交入口为：
+集群提交使用 \texttt{qsub\_mpi.sh}，不使用 \texttt{test.sh}。脚本中项目目录为 \texttt{ann}，编译器为 \texttt{mpic++}，默认资源为 \texttt{nodes=1:ppn=8}，运行时 \texttt{NP=2}、每进程 \texttt{THREADS=4}，满足 \texttt{np <= nodes*ppn}、\texttt{nodes <= 4}、\texttt{ppn <= 8}。提交命令为：
 \begin{lstlisting}[language=bash]
-NP=16 ANN_DATA=/anndata CSV=files/results/mpi_results_arm_kunpeng_cluster.csv \
-    qsub qsub_mpi.sh
+cd ann
+qsub qsub_mpi.sh
 \end{lstlisting}
+脚本会在主节点编译可执行文件，将可执行文件、HNSW 头文件目录和数据复制到计算节点，通过 \texttt{mpiexec -np} 启动程序，结束后把输出目录复制回主节点。本程序运行不依赖预置的 \texttt{files} 输入目录；\texttt{files} 主要作为输出目录回传。若作业长时间无输出，可用 \texttt{qstat} 检查队列状态；若确认死锁或资源长期占用，则使用 \texttt{qdel} 删除对应作业。
 
 \subsection{实验矩阵}
 
-本地正式 CSV 为 \texttt{files/results/mpi\_results\_x86\_windows.csv}，共 172 行。主要覆盖如下：
+x86 full 与 ARM quick 的实验结果规模分别为：
 \begin{itemize}
-    \item base 规模：25k、50k、100k；query 数：1000；
-    \item MPI ranks：1、2、4、8；
-    \item OpenMP threads per rank：1、2、4；
-    \item IVF nprobe：16、32、64、128、256；
-    \item 通信模式：blocking、nonblocking、point-to-point、one-sided；
-    \item MPI 线程等级：FUNNELED 与 MULTIPLE；
-    \item 距离核：scalar 与 SIMD；
-    \item 算法族：Flat、IVF、HNSW、multi-HNSW、IVF-HNSW。
+    \item x86 full：100k base / 1000 query，共 172 组配置；
+    \item ARM quick：50k base / 300 query，共 111 组配置。
 \end{itemize}
-每组正式实验重复 3 次，记录最低 latency。最低值更接近稳定运行时上界，且能降低 Windows 后台扰动对短 query 的影响。
+实验矩阵覆盖内容如下：
+\begin{itemize}
+    \item 算法：Flat、IVF、HNSW、multi-HNSW、IVF-HNSW；
+    \item MPI ranks：x86 覆盖 1/2/4/8，ARM quick 主扫描覆盖 1/2/4，图索引补充 8 ranks；
+    \item OpenMP threads：x86 覆盖 1/2/4，ARM quick 覆盖 1/2；
+    \item IVF nprobe：x86 覆盖 16/32/64/128/256，ARM quick 覆盖 16/32/64；
+    \item 通信方法：blocking、nonblocking、p2p、one-sided；
+    \item 距离核：scalar 与 SIMD；
+    \item profiling 阶段：build、distribute、search、comm、merge、total、work imbalance。
+\end{itemize}
+
+实验顺序先覆盖不同 base 规模下的 Flat/IVF 和 nprobe，再固定 100k base 比较通信方式、OpenMP threads、\texttt{std::thread}、\texttt{MPI\_THREAD\_MULTIPLE}、scalar/SIMD 和图索引组合。x86 full 默认每组重复 3 次并取稳定最低 latency；ARM quick 为了降低集群占用采用单次运行，保留相同算法和并行维度，便于观察跨平台趋势。
 
 % =====================================================================
-\section{总体结果与 recall-latency 权衡}
+\section{总体结果与跨平台趋势}
 % =====================================================================
 
 \begin{figure}[H]
 \centering
 \figimg{fig_mpi_01_pareto_frontier}
-\caption{全量 DEEP100K 上所有 100k/1000-query 实验的 recall-latency 分布。虚线为 recall@100=0.95。}
+\caption{x86 full 100k/1000-query 实验的 recall-latency 分布。虚线为 recall@100=0.95。}
 \label{fig:pareto}
 \end{figure}
 
-图 \ref{fig:pareto} 显示，Flat 精确扫描稳定达到 recall@100=1.0，但延迟较高；IVF 通过调整 nprobe 在 0.91 到 1.0 之间形成连续曲线；HNSW 与 multi-HNSW 位于左上区域，是高召回低延迟的主要候选；IVF-HNSW 在当前实现中延迟明显高于 HNSW，说明簇内建图并不能抵消多簇搜索和候选合并的开销。
+图 \ref{fig:pareto} 显示 x86 full 下的正式筛选空间。Flat 全部位于 recall=1.0，但延迟高；IVF 形成由 nprobe 控制的连续曲线；HNSW 和 multi-HNSW 位于左上区域；IVF-HNSW 可达到阈值，但延迟明显高于直接 HNSW。该图中的最优选择不是 recall 最大的点，而是 recall@100 达到 0.95 后的最低 latency 点。
+
+从算法族看，Flat 的意义是给出精确基线和 raw recall 上界；它在 P8 下仍为 0.1928~\msq，说明单纯扫描即使用 SIMD 和 MPI 分片也难以达到图索引的延迟。IVF 是最清晰的 recall-latency 连续控制器，nprobe 从 16 增加到 32 时跨过阈值，之后继续增大主要换来小幅 recall 增益。HNSW 则直接把访问点数降到很低，因此位于 Pareto 前沿左端。multi-HNSW 的 recall 更高但延迟高于 HNSW，说明“分片覆盖更多候选”与“多图重复搜索”之间存在明显 trade-off。
+
+优化过程先从 Flat-SIMD 验证正确性和基础扩展性开始。x86 full 中 Flat-SIMD 从 P1 的 1.7449~\msq 降到 P8 的 0.1928~\msq，说明 base-sharding 和全局 merge 的语义正确且能显著减少扫描时间。随后引入 IVF 后，P8 nprobe=32 把 latency 降至 0.0573~\msq，并保持 recall=0.9654；再引入 HNSW 后，P1T4 达到 0.0312~\msq。这个顺序表明主要收益经历了三次瓶颈转移：从全量距离计算到倒排候选覆盖，从倒排扫描到图访问数量，再从本地搜索转向线程调度、通信和 merge。
 
 \begin{table}[H]
 \centering
-\small
-\caption{各算法族在 recall@100 $\ge 0.95$ 下的最优配置}
+\scriptsize
+\caption{x86 full 中 recall@100$\ge0.95$ 下各算法族最优配置}
+\resizebox{\linewidth}{!}{%
 \begin{tabular}{lrrrrllrr}
 \toprule
 算法 & ranks & threads & nprobe & ef & 线程模型 & 通信 & latency & recall \\
@@ -249,39 +318,60 @@ Flat & 8 & 1 & 512 & 64 & stdthread & blocking & 0.1928 & 1.0000 \\
 IVF-HNSW & 8 & 1 & 32 & 64 & stdthread & nonblocking & 0.2488 & 0.9654 \\
 \bottomrule
 \end{tabular}
-\label{tab:best_family}
+}
+\label{tab:x86_best}
 \end{table}
 
-表 \ref{tab:best_family} 给出按统一准则筛出的最优点。若不强制使用多 rank，HNSW 的单进程 4 OpenMP threads 最快；如果要求 MPI rank$\ge2$，最优点是 2 ranks + 4 OpenMP threads，latency 为 0.0330~\msq，recall@100 为 0.9816。两者差距很小，说明 HNSW 的单 rank 并发已经足够快，多 rank 主要提升 recall 和构建分片规模，而不是继续降低查询延迟。
-
 \begin{figure}[H]
 \centering
-\figimg{fig_mpi_02_best_by_method}
-\caption{各算法族最优配置的 latency 和 recall。柱顶的 P/T 表示 MPI ranks 与每 rank 线程数。}
-\label{fig:best_method}
+\figimg{fig_mpi_02_platform_best_by_method}
+\caption{x86 full 与 ARM quick 的各算法族最低延迟。ARM quick 的 recall 是 50k base 对 100k ground truth 的 raw recall。}
+\label{fig:platform_best}
 \end{figure}
 
-从图 \ref{fig:best_method} 可以看到，IVF 是最稳定的倒排索引方案，延迟约为 Flat 的 29.7\%；HNSW 进一步将延迟降低到 Flat 的 16.2\%。multi-HNSW 的 recall 更高，但每个 rank 都需要完成本地图搜索并传回 top-100，merge 成本抵消了部分收益。IVF-HNSW 的 recall 能通过 nprobe=32 达到阈值，但搜索多个簇内 HNSW 的开销明显高于直接使用一个本地 HNSW。
-
-% =====================================================================
-\section{IVF 消融与 MPI 扩展性}
-% =====================================================================
-
-\subsection{nprobe 对 recall 与 latency 的影响}
-
-\begin{figure}[H]
-\centering
-\figimg{fig_mpi_03_ivf_nprobe_tradeoff}
-\caption{IVF 在不同 MPI ranks 下的 nprobe 消融。点旁数字为 nprobe。}
-\label{fig:ivf_tradeoff}
-\end{figure}
-
-IVF 的主要质量-性能旋钮是 nprobe。表 \ref{tab:ivf_nprobe} 进一步列出各 rank 在 nprobe 消融下的结果。nprobe=16 延迟最低但 recall 低于 0.95；nprobe=32 在 8 ranks 下达到 0.0573~\msq 和 0.9654 recall，是 IVF 路径的最优点；继续增大到 64/128/256 会提高召回，但 latency 近似线性增加。
+图 \ref{fig:platform_best} 不把两个平台视作同规模排名，而用于观察同一实现的趋势。ARM quick 的 Flat raw recall 为 0.5027，HNSW/multi-HNSW 接近该上限，说明图索引在 reduced-base 内部能覆盖大部分可命中真近邻；IVF 在 nprobe=16 时延迟最低但 raw recall 只有 0.4562，nprobe=64 时 raw recall 升至 0.4953。x86 full 中 HNSW 是全局最低延迟点；ARM quick 中 IVF 的最低延迟较低，是因为 nprobe=16 的搜索宽度很窄，不能与 x86 full 的 recall 阈值结果直接等价。
 
 \begin{table}[H]
 \centering
 \small
-\caption{IVF nprobe 消融：latency / recall}
+\caption{ARM quick 的 reduced-base raw recall 解释}
+\begin{tabular}{lrrr}
+\toprule
+算法 & raw recall 上限/最高值 & 相对 Flat 上限 & 代表 latency \\
+\midrule
+Flat & 0.502733 & 1.000 & 0.5987 \\
+IVF & 0.495333 & 0.985 & 0.2929 \\
+HNSW & 0.501500 & 0.998 & 0.3336 \\
+multi-HNSW & 0.502633 & 1.000 & 0.3858 \\
+IVF-HNSW & 0.497767 & 0.990 & 0.6461 \\
+\bottomrule
+\end{tabular}
+\label{tab:arm_recall}
+\end{table}
+
+表 \ref{tab:arm_recall} 说明 ARM quick 的 raw recall 上限由 reduced-base 设置决定。HNSW 与 multi-HNSW 的最高 raw recall 已接近 Flat 上限，算法质量在 quick 内部是合理的；IVF-HNSW 的 raw recall 也接近上限，但延迟较高，原因仍是多簇图搜索带来较大常数开销。
+
+ARM quick 的更合理读法是归一化到 Flat 上限。IVF 最高 raw recall 为 0.4953，达到 Flat 上限的 98.5\%；HNSW 和 multi-HNSW 分别达到约 99.8\% 和 100.0\%。这说明 ARM 侧没有出现算法失效，低于 0.95 是数据规模与 ground truth 不一致造成的评价上限问题。跨平台对比因此不能把 ARM quick 的 raw recall 与 x86 full 的正式 recall 混排，只能比较趋势：nprobe 增大时 recall 上升、ranks 增大时搜索缩短、通信占比随本地搜索缩短而上升。
+
+% =====================================================================
+\section{IVF 参数消融与扩展性}
+% =====================================================================
+
+\begin{figure}[H]
+\centering
+\figimg{fig_mpi_03_x86_ivf_nprobe_tradeoff}
+\caption{x86 full 中 IVF nprobe 的 recall-latency trade-off，点旁数字为 nprobe。}
+\label{fig:x86_ivf}
+\end{figure}
+
+x86 full 中，nprobe=16 在所有 ranks 下都低于 recall 阈值；nprobe=32 在 8 ranks 下达到 0.9654 recall 和 0.0573~\msq，是 IVF 的正式最优点；nprobe=64/128/256 继续提高 recall，但 latency 增长更快。该趋势符合 IVF 的复杂度：扫描链数增加会近似线性增加候选访问量，而 recall 提升逐渐饱和。
+
+更细地看，P1 从 nprobe=32 到 64 时 recall 从 0.959 提高到 0.986，但 latency 从 0.288 增到 0.409~\msq；P8 同样从 0.965 提高到 0.989，但 latency 只从 0.057 增到 0.074~\msq。rank 数越大，单 rank 的链越短，增加 nprobe 的绝对代价越低；但 P8 已经把搜索阶段压得很短，继续提高 nprobe 的收益主要是 recall 精修，而不是降低延迟。因此正式最优点出现在刚跨过阈值的 P8 nprobe=32。
+
+\begin{table}[H]
+\centering
+\small
+\caption{x86 full IVF nprobe 消融：latency / recall}
 \begin{tabular}{crrrrr}
 \toprule
 ranks & nprobe=16 & nprobe=32 & nprobe=64 & nprobe=128 & nprobe=256 \\
@@ -292,161 +382,204 @@ ranks & nprobe=16 & nprobe=32 & nprobe=64 & nprobe=128 & nprobe=256 \\
 8 & 0.051/0.918 & 0.057/0.965 & 0.074/0.989 & 0.102/0.998 & 0.160/1.000 \\
 \bottomrule
 \end{tabular}
-\label{tab:ivf_nprobe}
+\label{tab:x86_nprobe}
 \end{table}
-
-从复杂度看，nprobe 增大时访问候选数随倒排链数增长。MPI 分片使每条本地倒排链变短，因此同一 nprobe 在更多 ranks 下延迟下降。与此同时，全局 recall 会略微上升，因为每个 rank 独立返回 top-100，rank 0 实际上从 $P\times100$ 个候选中合并，候选池更大。但这个收益不是免费获得的：候选池越大，通信和 merge 的固定成本越明显。
-
-\subsection{问题规模与进程数}
-
-\begin{table}[H]
-\centering
-\small
-\caption{Flat-SIMD 在不同 base 规模和 MPI ranks 下的 latency}
-\begin{tabular}{crrrr}
-\toprule
-base 规模 & 1 rank & 2 ranks & 4 ranks & 8 ranks \\
-\midrule
-25k & 0.299 & 0.123 & 0.081 & 0.066 \\
-50k & 0.561 & 0.233 & 0.137 & 0.104 \\
-100k & 1.745 & 0.746 & 0.380 & 0.193 \\
-\bottomrule
-\end{tabular}
-\label{tab:scale}
-\end{table}
-
-表 \ref{tab:scale} 使用 Flat-SIMD 观察纯数据扫描随规模和进程数变化的趋势。100k base 下 8 ranks 相对 1 rank 的加速比为 9.05$\times$，超过理想 8$\times$ 的原因是每个进程的局部分片更小，top-k 堆和数据访问更容易留在 cache 中。25k base 下扩展性较弱，8 ranks 相对 1 rank 只有 4.52$\times$，因为本地扫描已很短，通信和 merge 占比更高。
 
 \begin{figure}[H]
 \centering
-\figimg{fig_mpi_04_process_breakdown}
-\caption{IVF nprobe=64 的阶段耗时拆分。纵轴为每 query 的 search、communication、merge 时间。}
-\label{fig:breakdown}
+\figimg{fig_mpi_04_arm_ivf_quick_tradeoff}
+\caption{ARM quick 中 IVF nprobe 趋势。raw recall 对照 100k ground truth，最高值受 50k base 限制。}
+\label{fig:arm_ivf}
 \end{figure}
 
-图 \ref{fig:breakdown} 说明了 MPI 加速的瓶颈迁移：rank 从 1 增加到 8 时，本地 search 从约 0.393~\msq 降到 0.050~\msq；merge 从约 0.015~\msq 增加到 0.020~\msq；通信从约 0.0002~\msq 增加到 0.0059~\msq。搜索仍是主要部分，但 merge 与通信的相对占比快速上升，解释了为什么 IVF 在 8 ranks 之后预期继续扩展会变得困难。
+ARM quick 中，nprobe 从 16 增加到 64 时 raw recall 从约 0.451--0.456 提高到约 0.494--0.495，已经接近 Flat 上限 0.5027；latency 则从 P4 的 0.1332~\msq 增至 0.2929~\msq。该趋势与 x86 full 一致：更大的 nprobe 提高覆盖面，但带来更多倒排链扫描。不同的是，ARM quick 中由于 base 只有 50k，raw recall 的绝对值被规模限制，不能用 0.95 阈值筛选。
+
+ARM 的 P1/P2/P4 曲线斜率还说明了另一个问题：当 quick 模式把本地数据减半后，P4 下每 rank 的倒排链很短，nprobe=16 已能获得较低延迟；但如果为了逼近 reduced-base 上限而使用 nprobe=64，latency 会明显上升。换言之，ARM quick 中 IVF 的最低延迟点和最高 raw recall 点并不相同，这与 x86 full 中“刚达阈值最优”的选择逻辑一致，只是 quick raw recall 上限不同。
 
 % =====================================================================
-\section{MPI 通信方法与线程支持}
+\section{通信方法、同步与 MPI 线程支持}
 % =====================================================================
-
-\subsection{通信方式对比}
 
 \begin{figure}[H]
 \centering
 \figimg{fig_mpi_05_comm_methods}
-\caption{IVF nprobe=64、stdthread、SIMD 下四种结果回收通信方式的对比。}
+\caption{4 ranks、IVF nprobe=64 下通信方式对 latency 和通信占比的影响。}
 \label{fig:comm}
 \end{figure}
 
-四种通信方式在单机 MS-MPI 上差距不大，因为传输对象只是 $nq\times k$ 的距离和 id 数组，通信量相对 base 数据扫描较小。表 \ref{tab:comm} 给出更细的结果。1 rank 时通信方式没有真实进程间传输，one-sided 反而由于窗口创建和 fence 开销变慢。8 ranks 时 one-sided 延迟最低，为 0.0716~\msq；p2p 和 blocking 接近；nonblocking 并没有明显优势。
+图 \ref{fig:comm} 比较了四种结果回收方式。x86 full 中四种方式的 latency 均约为 0.110--0.113~\msq，通信占比约 2.5\%--4.1\%。ARM quick 中 latency 约为 0.288--0.304~\msq，通信占比约 15.7\%--20.1\%，明显高于 x86。这表明 reduced-base 场景下本地搜索更短，通信和同步开销更容易暴露；同时 ARM/Kunpeng 平台的 MPI 实现、进程间通信路径和内存系统也可能放大该占比。
 
 \begin{table}[H]
 \centering
 \small
 \caption{IVF nprobe=64 通信方式对比：latency，括号内为总通信时间 ms}
-\begin{tabular}{crrrr}
+\begin{tabular}{clrrrr}
 \toprule
-ranks & blocking & nonblocking & p2p & one-sided \\
+平台 & ranks & blocking & nonblocking & p2p & one-sided \\
 \midrule
-1 & 0.409 (0.2) & 0.404 (0.2) & 0.409 (0.2) & 0.428 (5.0) \\
-2 & 0.204 (4.2) & 0.204 (0.4) & 0.211 (2.0) & 0.209 (3.4) \\
-4 & 0.111 (2.5) & 0.110 (4.4) & 0.113 (3.9) & 0.112 (3.0) \\
-8 & 0.074 (10.2) & 0.077 (8.5) & 0.075 (6.6) & 0.072 (5.9) \\
+x86 full & 1 & 0.409 (0.2) & 0.404 (0.2) & 0.409 (0.2) & 0.428 (5.0) \\
+x86 full & 2 & 0.204 (4.2) & 0.204 (0.4) & 0.211 (2.0) & 0.209 (3.4) \\
+x86 full & 4 & 0.111 (2.5) & 0.110 (4.4) & 0.113 (3.9) & 0.112 (3.0) \\
+x86 full & 8 & 0.074 (10.2) & 0.077 (8.5) & 0.075 (6.6) & 0.072 (5.9) \\
+ARM quick & 1 & 1.229 (0.1) & 1.180 (0.2) & 1.264 (0.2) & 1.260 (0.6) \\
+ARM quick & 2 & 0.580 (5.9) & 0.574 (20.0) & 0.584 (0.6) & 0.530 (2.4) \\
+ARM quick & 4 & 0.293 (14.0) & 0.288 (14.3) & 0.304 (18.2) & 0.298 (15.6) \\
 \bottomrule
 \end{tabular}
 \label{tab:comm}
 \end{table}
 
-nonblocking 的理论优势来自通信与计算重叠，但当前实现中本地搜索结束后才统一 gather，所以 \texttt{MPI\_Igather} 只能减少调用阻塞形式带来的局部等待，不能真正隐藏搜索时间。若要进一步利用 nonblocking，需要把 query batch 分块，例如搜索第 $b$ 个 batch 时异步传输第 $b-1$ 个 batch 的候选；这会增加结果缓存和 merge 调度复杂度，也会改变 CSV 中 stage timing 的定义。
+nonblocking 的理论优势在于通信与计算重叠。但当前实现是“先完成本地搜索，再统一 gather”，\texttt{MPI\_Igather} 没有与下一批 query 的搜索重叠，因此只改变等待方式，不改变整体依赖链。真正利用 nonblocking 需要 query batch 流水线：搜索 batch $b$ 的同时传输 batch $b-1$ 的候选，并让 root 分批 merge。该方案会增加 buffer 管理和结果顺序控制，适合作为后续优化。
+
+从结果看，x86 P4 下四种通信方式的 latency 差异只有约 0.003~\msq，远小于 nprobe 或算法族差异；ARM P4 下通信占比更高，但不同通信 API 的总延迟仍集中在 0.288--0.304~\msq。原因是候选回收的数据量固定，且 root merge 是所有方法共同的后处理。one-sided 不一定更快，因为 \texttt{MPI\_Win\_create} 和 fence 的同步成本在小消息场景下会很明显；p2p 也不一定更快，因为 root 顺序接收会暴露接收端热点。通信方法的主要价值不是直接替代算法优化，而是为后续树形 reduce 或流水线结构提供实现基础。
 
 \subsection{MPI\_THREAD\_MULTIPLE}
 
-程序默认请求 \texttt{MPI\_THREAD\_FUNNELED}，即只有主线程调用 MPI。额外实验请求 \texttt{MPI\_THREAD\_MULTIPLE}，MS-MPI 返回 provided=3，说明运行时支持多个线程同时调用 MPI。结果如表 \ref{tab:thread_multiple}。
+x86 full 中，\texttt{MPI\_THREAD\_FUNNELED} 与 \texttt{MPI\_THREAD\_MULTIPLE} 的差异很小：1/2/4/8 ranks 下 FUNNELED latency 分别为 0.4068、0.2040、0.1105、0.0779~\msq；MULTIPLE 分别为 0.4035、0.2049、0.1118、0.0774~\msq，MS-MPI 返回 provided=3。原因是当前线程只参与本地 query 搜索，MPI 调用仍由主线程执行。MULTIPLE 的价值在于多线程同时发起通信的流水线结构；在本实现中，FUNNELED 更简单，且不会引入额外线程安全管理成本。
 
-\begin{table}[H]
-\centering
-\small
-\caption{\texttt{MPI\_THREAD\_FUNNELED} 与 \texttt{MPI\_THREAD\_MULTIPLE} 对比}
-\begin{tabular}{crrr}
-\toprule
-ranks & FUNNELED latency & MULTIPLE latency & provided \\
-\midrule
-1 & 0.4068 & 0.4035 & 3 \\
-2 & 0.2040 & 0.2049 & 3 \\
-4 & 0.1105 & 0.1118 & 3 \\
-8 & 0.0779 & 0.0774 & 3 \\
-\bottomrule
-\end{tabular}
-\label{tab:thread_multiple}
-\end{table}
-
-差异均在短时间测量波动范围内。原因是当前设计只有主线程进入 gather/merge，工作线程只负责本地 query 计算，因此 \texttt{MPI\_THREAD\_MULTIPLE} 的能力没有被充分使用。它适合更复杂的流水线方案，例如一个线程持续搜索、另一个线程持续发起 \texttt{MPI\_Isend}；在本实现中，FUNNELED 更简单，也避免 MPI 运行时为多线程互斥付出额外成本。
+这组结果还说明 MPI 线程支持不能脱离程序结构讨论。若使用 FUNNELED，MPI 库只需保证主线程进入 MPI；若请求 MULTIPLE，MPI 库需要支持任意线程进入 MPI，内部可能维护锁和进度状态。当前实验中 MULTIPLE 没有显著负担，是因为真正进入 MPI 的仍然是主线程；若将每个 OpenMP 线程直接发送自己的局部候选，MULTIPLE 的成本和收益才会同时出现。报告中因此把 MULTIPLE 视为编程模型对比，而不是默认加速策略。
 
 % =====================================================================
-\section{OpenMP 混合并行与 SIMD 贡献}
+\section{阶段 profiling、负载均衡与 cache locality}
 % =====================================================================
 
 \begin{figure}[H]
 \centering
-\figimg{fig_mpi_06_openmp_hybrid_heatmap}
-\caption{OpenMP 混合并行延迟热力图。行表示算法和每 rank 线程数，列表示 MPI ranks。}
-\label{fig:openmp_heatmap}
+\figimg{fig_mpi_06_stage_breakdown}
+\caption{IVF nprobe=64 的 search、comm、merge 阶段占比。每个平台使用各 ranks 下最低 latency 的通信方式。}
+\label{fig:breakdown}
 \end{figure}
 
-图 \ref{fig:openmp_heatmap} 显示了进程数和线程数的 trade-off。IVF 从 T1 到 T4 持续受益，1 rank 下从 0.435 降到 0.105~\msq；8 ranks 下 T2 与 T4 的差距很小，说明本地工作量已经被 MPI 分片切小，继续增加线程会遇到调度和 cache 竞争。HNSW 在 T4 时 1--2 ranks 最快，但 8 ranks 变慢到 0.060~\msq，主要因为每个 rank 的本地图更小，查询本身已短，OpenMP 调度和全局 merge 成为主要开销。
+图 \ref{fig:breakdown} 展示了阶段比例。x86 full 中，P1/P2/P4 的 search 占比分别约 96.5\%、90.9\%、81.8\%，merge 占比分别约 3.4\%、7.1\%、14.4\%。ARM quick 中，P1/P2/P4 的 search 占比分别约 98.2\%、94.3\%、77.5\%，P4 下通信占比上升到约 14.3\%。这说明 MPI 扩展的瓶颈会随进程数从本地搜索转向通信和 merge；ARM quick 因问题规模更小，本地搜索被切短后通信占比更快上升。
+
+阶段比例可以用 Amdahl 定律解释。若 search 阶段占比为 $s$，理想地把 search 加速 $P$ 倍后，总加速上界约为 $1/((1-s)+s/P)$。P1 时 search 占比接近 96\%，继续并行化有较大空间；P4 后 x86 merge 占比已超过 14\%，即使本地 search 继续变快，串行 merge 和通信也会限制端到端收益。ARM quick 的 P4 search 占比更低，说明同样的 MPI rank 数在小规模问题上更早进入通信/同步主导区间。
+
+负载均衡方面，连续 base 切分使每个 rank 的向量数最多相差 1。Flat 和 HNSW 的 \path{work_imbalance} 基本为 1.0；IVF 在 x86 最优点附近约为 1.03，来自局部倒排链长度差异。这个数值说明当前主要瓶颈不是数据量不均，而是 root merge 和候选传输的阶段比例。
+
+cache locality 方面，MPI 分片能改善本地扫描数组和 top-k 堆的局部性。x86 full 中 Flat-SIMD 从 P1 的 1.7449~\msq 降到 P8 的 0.1928~\msq，超过理想 8 倍加速，说明分片后的工作集更容易留在 cache 中。IVF 同样受益于倒排链变短；但 nprobe 过大时会访问许多短链，链切换和堆维护的常数成本上升，使 latency 与 nprobe 接近线性增长。
+
+cache 优化不是单独的代码技巧，而是由数据划分改变工作集大小。Flat 扫描按连续内存访问，分片后每 rank 顺序读取更小的 base 区间，硬件预取更稳定；IVF 访问倒排链，链内局部性较好，但多个链之间跳转会破坏连续访问。HNSW 的邻接访问更随机，cache 友好性弱于 Flat/IVF，但访问点数少，随机访存的总量被压低。由此可见，不同索引的 cache 问题不同：Flat 依赖带宽和 SIMD，IVF 依赖链布局和 nprobe，HNSW 依赖减少图访问点数。
+
+build 阶段也影响算法选择。IVF 的构建主要是本地 k-means 和倒排链填充，参数 nprobe 只影响查询，不需要重建索引；因此 IVF 适合做细粒度参数消融。HNSW 的 ef、M 和数据分片会影响图结构，构建时间明显高于 IVF，但查询阶段访问点数少。IVF-HNSW 同时支付 IVF 构建和多个簇内 HNSW 构建，若查询量不足以摊销 build 成本，端到端收益会进一步下降。报告的 latency 指标只统计在线查询，但工程选择仍要考虑索引更新频率。
+
+% =====================================================================
+\section{OpenMP 混合并行与 SIMD}
+% =====================================================================
 
 \begin{figure}[H]
 \centering
-\figimg{fig_mpi_07_simd_speedup}
-\caption{Flat 与 IVF 在不同 MPI ranks 下的 SIMD 加速比。}
+\figimg{fig_mpi_07_openmp_hybrid_heatmap}
+\caption{OpenMP 混合并行热力图。数值为 latency，列为 MPI ranks。}
+\label{fig:openmp}
+\end{figure}
+
+图 \ref{fig:openmp} 显示，x86 full 中 IVF 从 T1 到 T4 持续收益，P1 下由 0.435 降至 0.105~\msq；P4 下由 0.113 降至 0.063~\msq。P8 下 T2 到 T4 的收益很小，说明 MPI 分片已使单 rank 工作量较小，线程调度和 cache 竞争开始抵消收益。HNSW 在 x86 中 P1T4 最快，P4T4 比 P2T4 慢，说明图搜索本身很短后，增加 ranks 会提高 merge 成本。
+
+OpenMP 和 MPI 的组合存在资源分配边界。固定核心数下，增加 ranks 会减少每 rank 数据量，但也增加候选回收和进程调度；增加 threads 会提高单 rank 内 query 并发，但多个线程共享同一个本地索引和内存带宽。IVF 的 query 之间几乎独立，适合 OpenMP 批并行；HNSW 单 query 访问点少，T4 后继续增加 MPI rank 的收益很小。最终 P2T4 成为 MPI 多进程最优点，反映出“少量分片 + 足够进程内并发”比“很多分片 + 每分片很小任务”更适合该数据规模。
+
+ARM quick 中 OpenMP T2 仍有明显收益：IVF P4 从 0.295 降至 0.207~\msq，HNSW P4 从 0.334 降至 0.249~\msq。由于 ARM quick 只覆盖到 T2，不能判断 T4 是否继续有效；但趋势表明 query-level 并行在 ARM 上同样可移植，收益主要取决于每 rank 剩余工作量是否足够大。
+
+从 x86 的 rank-thread 组合看，HNSW P1T1/P1T2/P1T4 分别为 0.0789、0.0473、0.0312~\msq，线程并行收益明显；P2T4 为 0.0330~\msq，已经接近 P1T4；P4T4 和 P8T4 分别退化到 0.0438、0.0596~\msq，说明继续增加 ranks 后 merge 和进程调度超过了数据分片收益。IVF 的表现不同：P1T4 为 0.1045~\msq，P4T4 为 0.0625~\msq，P8T4 为 0.0615~\msq，说明 IVF 仍能从 MPI 分片中受益，但 P8 后 OpenMP 的边际收益已经很小。这个差异来自算法内部访问量：IVF 仍有较多链内距离计算，HNSW 则更早进入固定开销主导区。
+
+\begin{figure}[H]
+\centering
+\figimg{fig_mpi_08_simd_speedup}
+\caption{MPI rank 内 scalar 与 SIMD 距离核对比。x86 为 AVX2，ARM 为 NEON。}
 \label{fig:simd}
 \end{figure}
 
-SIMD 对 Flat 的加速比随 ranks 增大从 1.74$\times$ 上升到 2.56$\times$；对 IVF 的加速比从 3.10$\times$ 下降到 2.10$\times$。Flat 中堆维护和 merge 占比较高，限制了距离核的可见加速；IVF 中 centroid 距离和倒排链扫描更集中地调用内积核，SIMD 收益更明显。8 ranks 时 SIMD 加速比下降，是因为本地扫描缩短后通信与 merge 占比提高，Amdahl 定律中不可向量化部分变大。
+图 \ref{fig:simd} 显示，ARM NEON 对 Flat 的加速比达到 2.88--3.26$\times$，高于 x86 Flat 的 1.74--2.29$\times$；IVF 中 x86 AVX2 加速比为 2.58--3.09$\times$，ARM NEON 为 1.82--1.91$\times$。差异来自两方面：Flat 的计算几乎全在内积核，ARM 标量基线较慢，因此 NEON 可见收益高；IVF 除内积外还有 centroid 选择、倒排链遍历和 top-k 堆维护，ARM 上这些非 SIMD 部分占比更高，导致 SIMD 加速比低于 Flat。该结果符合 Amdahl 定律：当通信、merge 和堆维护占比上升时，单纯加速距离核的收益会下降。
+
+SIMD 对 MPI 的影响也具有边际递减。P1 时距离计算占比最高，向量化能直接降低主耗时；P4/P8 时每 rank 扫描量下降，通信、merge、堆维护和索引遍历占比上升，SIMD 加速比会被稀释。因此“MPI + SIMD”不是两种加速比简单相乘，而是不断改变瓶颈所在。报告保留 scalar/SIMD 对照的目的，就是区分距离核优化带来的收益和 MPI 分片带来的收益。
 
 % =====================================================================
-\section{图索引组合分析}
+\section{图索引组合与负优化分析}
 % =====================================================================
 
 \begin{figure}[H]
 \centering
-\figimg{fig_mpi_08_graph_variants}
-\caption{图索引路径在 recall@100 $\ge 0.95$ 下的最优延迟对比。}
+\figimg{fig_mpi_09_graph_variants}
+\caption{HNSW、multi-HNSW、IVF-HNSW 在 x86 full 与 ARM quick 中的对比。}
 \label{fig:graph}
 \end{figure}
 
-HNSW 的最优点是 0.0312~\msq，multi-HNSW 为 0.0734~\msq，IVF-HNSW 为 0.2488~\msq。multi-HNSW 的 recall 高于单 rank HNSW，是因为多个分片各自返回 top-100，合并后候选覆盖面更大；但查询时每个 rank 都需要执行一次图搜索，且 root 需要合并更多候选，延迟没有继续下降。IVF-HNSW 的负担更重：先要计算 centroid 并选择 nprobe 个簇，再对多个簇内 HNSW 查询，等价于在 query 内部串行执行多次小图搜索。当前数据规模下，小图搜索的常数开销和多簇调度成本高于直接在本地分片上使用一个 HNSW。
+x86 full 中，HNSW 最优为 0.0312~\msq、recall=0.9545；multi-HNSW 为 0.0734~\msq、recall=0.9929；IVF-HNSW 为 0.2488~\msq、recall=0.9654。multi-HNSW 的 recall 更高，是因为多个分片各自返回 top-100，候选覆盖更大；但每个 rank 都要执行本地图搜索，root 还要合并更多候选，因此 latency 不如单 HNSW。IVF-HNSW 的延迟最高，原因是查询先计算 centroid，再对多个簇内 HNSW 重复发起图搜索，小图搜索的固定开销和多簇调度抵消了 IVF 的过滤收益。
 
-图索引的另一个特点是构建时间。HNSW 构建需要逐点插入并维护邻接结构，1 rank 的构建时间约 6.42 s；2 ranks 降到约 2.77 s，4 ranks 降到约 1.31 s。构建可以从 MPI 分片中获益，但查询阶段是否获益取决于 search、comm、merge 三者占比。若系统以大量离线构建、在线低延迟查询为主，HNSW 是更优选择；若需要频繁更新或快速重建索引，IVF 的构建成本更低，工程上更稳健。
+HNSW-on-HNSW 可以理解为先把数据分为多个底层 HNSW 子图，再在子图入口或子图代表点之上建立上层导航结构。本文没有单独构建显式的上层 HNSW，而是用 multi-HNSW 研究“多个底层 HNSW 并行搜索后合并”的主要代价：每个子图都会产生一次图搜索和一组 top-100 候选，root 合并压力随子图数增加。若再加入上层 HNSW，它可能减少需要访问的子图数量，但会引入上层图构建、入口选择误差和跨子图候选一致性问题。因此本文把 multi-HNSW 与 IVF-HNSW 作为 HNSW 组合策略的可执行近似，用实验结果分析这类结构的收益和负优化来源。
+
+进一步看 ef 的作用，multi-HNSW 在 P4 ef=32 时已达到 0.0734~\msq、recall=0.9929；继续把 ef 提到 128 后 recall 只小幅上升，而 latency 增至约 0.0866~\msq。IVF-HNSW 对 nprobe 更敏感：nprobe=16 时延迟较低但 recall 不足，nprobe=32 达到阈值后延迟已到 0.2488~\msq，nprobe=64 进一步增加到 0.4266~\msq。该结果说明图索引组合的优化变量并不独立，ef 扩大单图搜索宽度，nprobe 增加被搜索的小图数量，两者相乘后会放大常数开销。
+
+ARM quick 中，HNSW 与 multi-HNSW raw recall 接近 Flat 上限，但 latency 分别为 0.2412 和 0.2942~\msq。IVF-HNSW 的最低延迟为 0.2071~\msq，但 raw recall 只有 0.4606；若追求更高 raw recall，需要 nprobe=64，latency 会升至约 0.6461~\msq。这个结果说明 IVF-HNSW 是典型的负优化候选：结构更复杂，不一定降低延迟；只有当簇内数据足够大、簇选择足够准确，或多个簇内 HNSW 能并行搜索时，它才可能优于直接 HNSW。
+
+图索引构建也需要纳入 trade-off。HNSW 构建需要逐点插入并维护邻接关系，x86 P1 构建约 6.42 s，P2 降到约 2.77 s，P4 降到约 1.31 s。IVF 构建更快、参数更直观，适合频繁重建或快速调参；HNSW 查询延迟更低，适合离线构建、在线查询的场景。multi-HNSW 适合追求更高候选覆盖，但要接受 merge 成本上升。
 
 % =====================================================================
-\section{性能分析与进一步优化}
+\section{综合分析}
 % =====================================================================
 
-\subsection{负载均衡}
+\subsection{串行、MPI、MPI+SIMD、MPI+OpenMP 的关系}
 
-连续 base 切分使每个 rank 的向量数最多相差 1。Flat 与 HNSW 的 work imbalance 为 1.0；IVF 的 work imbalance 约 1.03，来自不同局部倒排链长度差异。这个数值说明当前主要问题不是数据量倾斜，而是阶段比例变化：当本地搜索加速后，root 端 merge 逐渐固定为每 query 的不可并行部分。
+Flat scalar 单进程是最直接的串行基线；Flat SIMD 单进程体现距离核优化；多 rank Flat/IVF 体现 MPI 数据分片；OpenMP T2/T4 体现进程内 query-level 并行；HNSW 和 IVF-HNSW 体现算法层面的访问量削减。实验结果表明，性能提升并非来自单一技术：MPI 减少每 rank 数据量，SIMD 降低每次距离计算成本，OpenMP 提高 query batch 并发度，ANN 索引减少访问点数。四者叠加后，瓶颈会从距离计算转移到 top-k 堆、通信和 merge。
 
-\subsection{cache locality}
+\subsection{通信与计算重叠}
 
-MPI 分片改善了 cache locality。以 Flat-SIMD 为例，100k base 下 8 ranks 的速度超过理想线性加速，说明每 rank 扫描的本地数组更小，L2/L3 cache 命中率和堆数据局部性更好。IVF 也从分片中受益，倒排链变短后候选扫描更快；但 nprobe 过大时会访问许多短链，链切换和 top-k 堆操作的常数成本上升，导致 latency 与 nprobe 接近线性增长。
+当前 nonblocking 版本没有把通信与下一批搜索重叠，因此优势不稳定。要真正重叠，需要将 query batch 拆成多个块，rank 在搜索 batch $b$ 时异步发送 batch $b-1$ 的候选，root 分批 merge。这会把总时间从
+\[
+T=\sum_b (T_{\mathrm{search},b}+T_{\mathrm{comm},b}+T_{\mathrm{merge},b})
+\]
+改为近似
+\[
+T\approx T_{\mathrm{search},0}+\sum_b \max(T_{\mathrm{search},b},T_{\mathrm{comm},b-1})+\sum_b T_{\mathrm{merge},b}.
+\]
+但该方案要求双缓冲、结果顺序管理和更复杂的错误处理。在当前规模下，通信占比只有在 ARM quick P4 和更高 ranks 时较明显，因此优先级低于减少 merge 成本。
 
-\subsection{通信和 merge}
+\subsection{merge/reduce 优化}
 
-通信量与 $P\cdot nq\cdot k$ 成正比。当前每个候选包含一个 float 距离和一个 32-bit id，1000 query、8 ranks、k=100 时，距离和 id 合计约 6.4 MB，不算大。但 root 端 merge 必须对每个 query 处理 $P\times100$ 候选，且该阶段没有被 MPI 分散。后续可以考虑两种优化：第一，使用树形 merge/reduce，让中间 rank 先合并部分候选；第二，让每个 rank 返回 top-p 且 $p<100$，以 recall 损失换取更低通信和 merge 成本。这两种方法都会改变 recall-latency 曲线，需要重新以 recall@100 阈值筛选。
+当前 root 直接合并所有 rank 的候选，简单且稳定，但不是最优通信结构。对于多节点集群，可以使用树形 top-k reduce：相邻 rank 先局部合并，再逐层向 root 汇总。该方法把 root 处理的瞬时候选压力从 $P\times k$ 分散到多层 $2k$ 合并，降低 root 热点，但实现需要自定义 top-k 数据类型或手写分层通信。另一种策略是每 rank 返回 top-p，且 $p<100$，减少通信和 merge；其风险是召回下降，必须重新进行 recall-latency 消融。
 
-\subsection{算法选择}
+\subsection{局部 top-p 与 rerank}
 
-在全量数据上，HNSW 是最低延迟方案，IVF 是最低构建成本和较好可解释性的方案。IVF 的最佳点为 nprobe=32，它没有追求 recall=1.0，而是在 recall@100 超过 0.95 后尽量减少访问链数。Flat 只作为精确基线，不适合最终低延迟提交。IVF-HNSW 当前不是最优，但它验证了 IVF 与图索引嵌套结构的可行性：当单簇数据更大、查询批量更大、或者可以并行搜索多个簇时，该结构仍可能有价值。
+当前实现让每个 rank 固定返回 top-100。这一选择保证全局 merge 的语义清晰：任意真实全局 top-100 如果落入某个 rank，本地搜索只要命中该点，就一定会进入该 rank 的返回集。若改为 top-p 且 $p<100$，通信量会从 $P\times100$ 降到 $P\times p$，root merge 的候选数也同步下降；但当某个 rank 包含大量真实近邻时，过小的 $p$ 会直接截断这些候选，导致 recall 下降。由于最终目标是 recall@100 不低于阈值后的最低 latency，top-p 应作为单独消融参数，而不能只按通信量最小选择。
+
+rerank 方面，本文的 Flat、IVF、HNSW 和组合索引在候选进入堆时已经使用原始 float 向量计算精确内积，因此没有额外的近似编码重排阶段。若后续迁移到 IVF-PQ 或压缩图索引，搜索阶段可以先用量化距离产生更大的候选池，再用 SIMD 精确距离对候选做 rerank。该设计会把开销从大范围扫描转移到小候选集上的精确重排，适合与 MPI top-p 返回一起分析：每个 rank 返回更多未重排候选可能提高 recall，但会增加通信；每个 rank 先本地 rerank 则减少通信，但需要更多本地精确距离计算。
+
+阶段分析的重点是解释瓶颈迁移，而不是只比较最终 latency。x86 IVF 的 Pareto 前沿定位 nprobe=32，阶段拆分说明 P4 以后 merge 占比上升，通信方式对比则说明四种通信 API 的差异小于算法参数差异。由此可以看出，后续优化应优先减少 root 合并压力和无效候选传输，再考虑把 nonblocking 通信改造成真正的 batch 流水线。
+
+\subsection{自由探索：候选返回与分层合并}
+
+除基础 base-sharding 外，本文额外分析了候选返回规模、树形合并和 batch 流水线三个方向。固定返回 top-100 的好处是语义稳定，不会在 MPI 回收前截断真实近邻；缺点是通信量和 root merge 随 ranks 线性增长。top-p 返回可以减少候选量，但必须重新做 recall-latency 消融，因为某个 rank 可能包含大量真实近邻。树形 top-k reduce 可以把 root 热点分散到多层合并，但需要自定义候选规约逻辑。batch 流水线则尝试让搜索与通信重叠，但需要双缓冲和顺序控制。实验中通信 API 的直接替换收益有限，因此这些自由探索更适合作为下一步结构性优化，而不是当前最快配置。
+
+\subsection{平台差异}
+
+x86 full 使用 AVX2 和较高单核频率，IVF/HNSW 查询延迟显著低于 ARM quick 的同类路径；ARM NEON 在 Flat 上加速比更高，说明 ARM 标量路径更慢且向量化收益明显。ARM quick 中通信占比更高，既与 reduced-base 导致本地搜索缩短有关，也可能与 MPI 运行时和内存系统有关。跨平台比较不能只看绝对 latency，应同时看问题规模、raw recall 上限、stage breakdown 和 SIMD speedup。
+
+更具体地说，x86 full 的 100k base/1000 query 让本地搜索占比更高，通信和 root merge 被较长的 search 阶段摊薄；ARM quick 的 50k base/300 query 缩短了本地搜索，固定通信同步和进程启动波动更容易在 per-query latency 中显现。SIMD 方面，AVX2 一次处理 8 个 float，NEON 一次处理 4 个 float，但实际加速比还受标量基线、编译器调度和内存带宽影响。Flat 中距离核占比最高，所以 NEON 加速比可以很高；IVF/HNSW 中堆维护、倒排链跳转和图访问占比提高，指令宽度差异就不再直接等价于端到端速度差异。
+
+\subsection{优化过程复盘}
+
+整体优化可以分为五个阶段。第一阶段实现 Flat base-sharding，用精确 recall 验证数据切分、全局 id、候选回收和 root merge。这个阶段的关键不是追求最低延迟，而是确保 P1/P2/P4/P8 返回结果与单机精确语义一致；Flat P8 recall=1.0 说明通信与 merge 没有破坏 top-100 排序。
+
+第二阶段加入 SIMD 距离核。Flat 标量 P1 为 3.0393~\msq，Flat SIMD P1 降到 1.7449~\msq；P8 下标量为 0.4937~\msq，SIMD 为 0.1928~\msq。这个结果说明距离计算仍是扫描型方法的主瓶颈，也验证了 kernel 分发在 MPI 程序中没有引入额外语义差异。
+
+第三阶段引入 IVF，把优化目标从“更快地扫描全部向量”转向“减少候选访问量”。nprobe=16 的延迟最低但 recall 不足；nprobe=32 在 P8 达到 0.9654 recall 和 0.0573~\msq，是 IVF 路径的最优点；nprobe=64/128/256 的 recall 更高，但延迟随链扫描量增长。该阶段确立了后续所有实验的筛选逻辑：先过滤掉 recall 不达标的点，再在剩余点中选 latency 最低。
+
+第四阶段加入 OpenMP 和 \texttt{std::thread}。IVF 中 OpenMP 能进一步压缩 batch query 的搜索时间，但当 ranks 很多时收益变小；HNSW 中 P1T4 最快，说明图索引访问量已经足够低，继续拆分 base 反而增加 merge。这个阶段把优化重点从“增加并行度”转为“匹配 ranks 与 threads 的比例”，最终得到 HNSW P2T4 作为 MPI 多进程检查配置。
+
+第五阶段探索通信方式、\texttt{MPI\_THREAD\_MULTIPLE}、multi-HNSW 和 IVF-HNSW。结果显示通信 API 的差异小于算法参数差异，MULTIPLE 在主线程通信结构下没有明显收益，组合图索引能提高 recall 但不一定降低延迟。因此最终代码保留这些分支作为实验和分析工具，而不是把它们设为默认最快路径。
+
+\subsection{最终选择}
+
+x86 full 的最终选择按 recall@100$\ge0.95$ 和 latency 最小确定。若允许单 rank + OpenMP，HNSW P1T4 是最低延迟点；若强调 MPI 多进程参与，HNSW P2T4 是最低延迟点；若选择倒排索引路径，IVF P8 nprobe=32 是最优点。Flat 只作为精确基线；IVF-HNSW 和 multi-HNSW 提供了图索引组合实验和 trade-off 分析，但不是最低延迟方案。
+
+最终 MPI 多进程配置为 HNSW、nonblocking、OpenMP、SIMD、2 ranks、4 threads、100k base、1000 query、ef=64、repeat=3。该配置不是全表最低的 P1T4，而是在保留 MPI 多进程参与的前提下满足 recall 阈值并取得最低 latency。完整消融则用于解释为什么更多 ranks、更高 ef 或更复杂的组合图索引没有成为最终选择。
 
 % =====================================================================
 \section{结论}
 % =====================================================================
 
-本文完成了 ANN 查询阶段的 MPI 数据分片、局部搜索、候选收集和全局 top-100 合并，并在同一框架下实现了 Flat、IVF、HNSW、multi-HNSW 与 IVF-HNSW。x86 正式实验表明，MPI 对扫描型算法有稳定加速，8 ranks 的 IVF 在 nprobe=32 下达到 0.0573~\msq、recall@100=0.9654；图索引在低延迟区域更有优势，2 ranks + 4 OpenMP threads 的 HNSW 达到 0.0330~\msq、recall@100=0.9816。通信方式的差异在单机上小于算法和参数差异；OpenMP 混合并行在本地工作量充足时有效，在 rank 过多时收益下降；SIMD 对距离计算仍有 2--3$\times$ 的可见贡献，但其上限受 top-k、通信和 merge 约束。
+本文完成了 MPI base-sharding ANN 查询框架，实现了本地索引构建、局部 top-100 维护、多种通信回收方式和全局 top-100 merge，并将 SIMD 与 OpenMP 混合并行纳入同一实验矩阵。x86 full 中，HNSW P1T4 达到 0.0312~\msq、recall@100=0.9545；MPI 多进程条件下 HNSW P2T4 达到 0.0330~\msq、recall@100=0.9816；IVF P8 nprobe=32 达到 0.0573~\msq、recall@100=0.9654。ARM quick 结果显示同一代码在 AArch64/NEON 上可运行，并呈现与 x86 一致的 nprobe、ranks、OpenMP 和 SIMD 趋势，但 raw recall 受 50k base 限制，不参与最终阈值筛选。
 
-后续若在多节点集群继续扩展，应重点优化全局 merge 和 query batch 流水线。对于 IVF，可尝试树形 top-k reduce、top-p 自适应返回和全局 centroid 同步；对于 HNSW，可探索入口点分配和分片图间剪枝策略。ARM/Kunpeng 侧已保留 quick/full 和 qsub 命令，使用 \texttt{-march=native} 后会在 AArch64 上走 NEON 路径。
+实验的主要结论是：MPI 分片对扫描型检索和 IVF 有稳定收益；SIMD 仍是距离计算核心优化；OpenMP 在每 rank 工作量充足时有效；通信方式差异小于算法和 nprobe 差异；当本地搜索足够快时，merge 和通信会成为扩展瓶颈。后续可围绕 query batch 流水线、树形 top-k reduce、top-p 自适应返回、全局 centroid 同步和图索引分片剪枝继续优化。
 
 \begin{thebibliography}{9}
 \bibitem{hnsw}
@@ -459,36 +592,52 @@ W. Fu, C. Xiang, Y. Wang, and D. Cai. Fast Approximate Nearest Neighbor Search W
 Message Passing Interface Forum. MPI: A Message-Passing Interface Standard.
 
 \bibitem{fastscan}
-A. André, A.-M. Kermarrec, and N. Le Scouarnec. Cache locality is not enough: high-performance nearest neighbor search with product quantization fast scan. \emph{VLDB}, 2015.
+A. Andre, A.-M. Kermarrec, and N. Le Scouarnec. Cache locality is not enough: high-performance nearest neighbor search with product quantization fast scan. \emph{VLDB}, 2015.
 \end{thebibliography}
 
-\newpage
 \appendix
 \section{生成式 AI 辅助学习记录}
 
-\subsection*{问答一：为什么 MPI 版本更适合 base-sharding，而不是 query-sharding？}
-\textbf{用户问题：} 在 ANN 检索中，如果有多个 MPI 进程，为什么要把 base data 切分给不同进程，而不是把 query 分给不同进程？
+\subsection*{问答一：为什么 ANN 的 MPI 并行更常使用 base-sharding？}
+\textbf{用户问题：} ANN 检索中，MPI 进程应该切分 query 还是切分 base data？
 
-\textbf{AI 回答：} query-sharding 和 base-sharding 优化的是不同目标。query-sharding 的通信最简单，每个进程处理一部分 query，但前提是每个进程都有完整 base 或完整索引；否则某个 query 只能看到局部数据，返回的不是全局 top-k。如果复制完整索引，内存占用会随进程数线性放大，而且多个进程重复持有同一份 base，不能体现分布式数据并行。base-sharding 则把数据集切成不重叠分片，每个进程只负责自己的向量集合；query 广播给所有进程后，每个进程返回局部 top-k，root 再合并成全局 top-k。这种方法通信更多，但结果语义清晰，能保证 recall 与单机全量检索可比。对于 DEEP100K 这种固定 top-100 评测，base-sharding 的通信量是 $O(PQK)$，而计算量从 $O(QNd)$ 降为 $O(QNd/P)$。当 $N$ 和 $d$ 较大时，计算下降通常能覆盖候选回收开销；当本地索引非常快时，merge 和通信会成为瓶颈。
+\textbf{AI 回答：} 两种切分方式对应不同系统目标。query-sharding 把不同 query 分配给不同进程，每个进程独立处理一部分请求，通信量很低；但为了得到全局 top-k，每个进程必须拥有完整 base 或完整索引。这样会复制内存，并且进程数增加时不能扩大可管理数据规模。base-sharding 则把 base data 分布在不同进程，每个进程只保存一部分向量或局部索引。query 广播给所有进程后，每个进程返回局部 top-k，最后合并成全局 top-k。它的通信量更高，但可以真正分摊数据和计算，结果也与完整数据集的 ground truth 对齐。对于 DEEP100K 这类固定 top-100 评测，base-sharding 更适合分析 MPI 数据并行、负载均衡、通信开销和 merge/reduce 开销。
 
-\subsection*{问答二：IVF 的 nprobe 为什么会形成 recall-latency trade-off？}
-\textbf{用户问题：} IVF 中 nprobe 增大时 recall 和 latency 为什么会同时上升？MPI 分片后这个关系有什么变化？
+\textbf{采纳与影响：} 实现采用 base-sharding 作为主线，报告也围绕局部分片搜索、局部 top-100 和全局 merge 展开。query-sharding 只作为复杂性对照，用于说明为什么不能简单把 query 分给多个进程后复制完整索引。
 
-\textbf{AI 回答：} IVF 先把 base 划分到若干倒排簇，查询时只访问与 query 最近的若干簇。nprobe 是被访问的簇数。nprobe 小时，扫描候选少，latency 低，但真实近邻可能落在未访问簇中，recall 降低。nprobe 大时，覆盖更多候选，recall 提高，但需要计算和扫描更多倒排链，latency 上升。MPI 分片后，每个 rank 只拥有本地数据的 IVF 索引，因此本地倒排链长度大约缩短到 $1/P$，同一 nprobe 下每个 rank 的扫描量下降；但所有 rank 都返回 top-k，root 的候选池扩大到 $P\times k$。这会带来两个结果：一方面，本地搜索变快；另一方面，通信和全局 merge 增大。实验中 nprobe=32 是较好的阈值点，因为它刚好越过 recall@100=0.95，而 nprobe=64/128/256 的额外召回收益不足以抵消延迟增长。
+\subsection*{问答二：IVF 的 nprobe 如何影响 MPI 版本性能？}
+\textbf{用户问题：} 为什么 IVF 的 nprobe 是最重要的消融参数？
 
-\subsection*{问答三：为什么 MPI\_THREAD\_MULTIPLE 不一定更快？}
-\textbf{用户问题：} MPI 支持多线程调用后，为什么 \texttt{MPI\_THREAD\_MULTIPLE} 没有显著加速？
+\textbf{AI 回答：} nprobe 决定每个 query 访问多少倒排簇。nprobe 小时，访问候选少，延迟低，但真实近邻可能落在未访问簇中；nprobe 大时，覆盖更多候选，召回提高，但扫描量增加。MPI 分片后，每个 rank 的倒排链更短，因此同一 nprobe 下本地扫描变快；同时每个 rank 都返回 top-k，root 的候选池扩大到 $P\times k$。这会带来一个折中：增加 ranks 降低本地 search，但提高通信和 merge 压力；增加 nprobe 提高 recall，但提高本地扫描。实验中 x86 full 的 IVF 最优点是 P8 nprobe=32，说明它刚好跨过 recall@100=0.95 阈值，而更大的 nprobe 带来的召回收益不值得其额外延迟。
 
-\textbf{AI 回答：} \texttt{MPI\_THREAD\_MULTIPLE} 只是允许多个线程同时调用 MPI，并不自动并行化通信。如果程序结构仍然是“工作线程完成本地搜索，主线程统一 gather”，那么 MPI 调用仍然集中在主线程，MULTIPLE 的能力没有被使用。相反，MPI 运行时为了保证线程安全，可能在内部增加锁或临界区，导致少量额外开销。在当前 ANN 实现中，线程并行发生在 query-level local search，通信发生在每轮搜索结束后，因此 \texttt{MPI\_THREAD\_FUNNELED} 已经足够。MULTIPLE 更适合流水线模型：例如线程 A 搜索 batch $b$，线程 B 发送 batch $b-1$ 的局部候选，线程 C 接收或合并更早的 batch。只有当通信和计算真正重叠时，MULTIPLE 才可能体现优势。
+\textbf{采纳与影响：} IVF 实验把 nprobe 设为核心消融变量，并与 ranks 一起画出 recall-latency 曲线。最终选择 P8、nprobe=32，是基于阈值约束下的延迟最小，而不是选择 recall 更高但扫描量更大的 nprobe=64/128/256。
 
-\subsection*{问答四：MPI+OpenMP 的进程数和线程数如何取舍？}
-\textbf{用户问题：} 在 MPI+OpenMP 混合并行中，为什么进程数和线程数不是越多越好？
+\subsection*{问答三：nonblocking MPI 为什么没有自动带来加速？}
+\textbf{用户问题：} 非阻塞通信不是可以重叠通信和计算吗，为什么结果中优势不明显？
 
-\textbf{AI 回答：} MPI 进程数增加会缩小每个进程的本地数据分片，从而减少扫描量和索引访问量；OpenMP 线程数增加会让同一进程内多个 query 并发执行。但二者共享 CPU core、cache 和内存带宽。若 $P\times T$ 接近或超过硬件并发能力，线程调度、cache 争用、NUMA 访问和 MPI 进程上下文切换都会增加。对于 IVF，线程数在本地候选扫描量较大时有效；当 ranks 很多时，每个 rank 的倒排链已经很短，继续增加线程只会放大调度成本。对于 HNSW，单 query 图遍历依赖较强，因此更适合 query-level 并行；但 HNSW 单次查询已经很快，过多 rank 会让 merge 成本占比升高。混合并行的合理策略是先用 MPI 分片把本地工作量降到合适范围，再用少量 OpenMP 线程填满 core，而不是同时把进程数和线程数都拉满。
+\textbf{AI 回答：} 非阻塞通信提供的是“发起后可继续执行”的能力，而不是自动重叠。若程序结构是先搜索全部 query，再统一 \texttt{MPI\_Igather}，那么通信阶段前面没有可并行的计算，\texttt{MPI\_Igather} 仍然需要在 \texttt{MPI\_Waitall} 处等待完成。要发挥 nonblocking 的优势，需要把 query 分成多个 batch：搜索 batch $b$ 时传输 batch $b-1$ 的候选，root 同时合并更早 batch。这要求双缓冲、异步请求管理和结果顺序控制。当前实现以可比性和稳定计时为优先，因此 nonblocking 主要作为通信方法对比，而不是完整流水线优化。
 
-\subsection*{问答五：IVF-HNSW 为什么可能慢于直接 HNSW？}
-\textbf{用户问题：} IVF-HNSW 看起来同时用了倒排和图索引，为什么实验中不一定比直接 HNSW 快？
+\textbf{采纳与影响：} 通信实验把 blocking、nonblocking、p2p 和 one-sided 放在相同结果格式下比较，并在正文中把 nonblocking 的实际收益与流水线条件分开讨论。该结论影响了优化顺序：先分析 merge 和候选返回规模，再考虑 batch 流水线。
 
-\textbf{AI 回答：} IVF-HNSW 的优势来自两级过滤：先用 IVF 找相关簇，再在簇内用 HNSW 搜索。但它也叠加了两类开销。第一，查询必须先计算到所有 centroid 的距离并选择 nprobe 个簇；第二，每个被选中簇都要启动一次小 HNSW 搜索。小图上的 HNSW 固定开销并不低，多次启动会削弱剪枝收益。如果 nprobe 太小，recall 不足；如果 nprobe 增大到满足 recall 阈值，多个簇内图搜索的总成本可能超过直接在一个本地 HNSW 上搜索。该结构更适合单簇较大、簇间区分明显、或可以并行搜索多个簇的场景。在 DEEP100K 的当前参数下，直接 HNSW 的图导航已经足够有效，IVF-HNSW 的两级结构没有带来更低 latency。
+\subsection*{问答四：MPI\_THREAD\_MULTIPLE 适合什么场景？}
+\textbf{用户问题：} MPI 支持多线程后，是否应该总是请求 \texttt{MPI\_THREAD\_MULTIPLE}？
+
+\textbf{AI 回答：} 不应该。若只有主线程调用 MPI，\path{MPI_THREAD_FUNNELED} 已经足够。请求 \path{MPI_THREAD_MULTIPLE} 会要求 MPI 运行时保证多个线程同时进入 MPI 的安全性，内部可能需要锁或更复杂的进度管理。只有当程序确实让多个线程同时发起 \texttt{MPI\_Isend}、\texttt{MPI\_Irecv}、\texttt{MPI\_Put} 等操作时，MULTIPLE 才可能有价值。对于本文的 query-level OpenMP，本地搜索线程不调用 MPI，所以 MULTIPLE 与 FUNNELED 差异很小。若后续实现 batch 流水线通信，可以重新评估 MULTIPLE 是否帮助隐藏通信延迟。
+
+\textbf{采纳与影响：} 主程序默认使用 FUNNELED，并补充 MULTIPLE 对比实验。正文将该实验解释为 MPI 线程安全支持的开销测量，而不是把 MULTIPLE 当作自动优化开关。
+
+\subsection*{问答五：为什么图索引在 MPI 中容易出现负优化？}
+\textbf{用户问题：} HNSW 本身很快，为什么 multi-HNSW 或 IVF-HNSW 不一定更快？
+
+\textbf{AI 回答：} HNSW 快是因为图导航能访问少量候选点。但当它与 MPI 分片组合时，每个 rank 都会执行一次本地图搜索，并返回 top-k；root 合并的候选数随 ranks 增加。multi-HNSW 提高了候选覆盖，但也增加了并行图搜索和合并成本。IVF-HNSW 还多了 centroid 选择和多个簇内 HNSW 查询，小图搜索的固定开销会被重复支付。如果 nprobe 小，召回不足；如果 nprobe 大，多个簇内图搜索的总时间可能高于直接 HNSW。因此图索引的并行化不能只叠加结构，需要分析每层过滤是否真正减少了足够多的访问点。
+
+\textbf{采纳与影响：} 图索引实验同时保留 HNSW、multi-HNSW 和 IVF-HNSW。报告没有把组合结构默认视为更优，而是用 latency、recall 和构建时间解释 multi-HNSW 提高覆盖、IVF-HNSW 增加常数开销的 trade-off。
+
+\subsection*{问答六：SIMD 与 MPI 的收益为什么会相互影响？}
+\textbf{用户问题：} 距离核已经用 SIMD 加速，为什么 MPI ranks 增加后 SIMD 加速比可能下降？
+
+\textbf{AI 回答：} SIMD 只加速距离计算部分。MPI ranks 增加后，每个 rank 的本地扫描量下降，距离计算在总时间中的占比也下降；与此同时，通信、merge、top-k 堆维护等不可向量化部分占比上升。根据 Amdahl 定律，当不可加速部分比例变大时，SIMD 的总体可见加速比会下降。实验中 IVF 在 x86 P1 的 SIMD 加速比约 3.10$\times$，P8 下降到约 2.09$\times$，正是因为 MPI 分片后搜索时间被压缩，merge 和通信占比提高。
+
+\textbf{采纳与影响：} SIMD 实验按平台和算法族分别计算加速比，并结合 stage breakdown 解释加速比变化。该分析避免只报告 AVX2/NEON 的局部内核速度，而忽略 MPI 通信和 merge 对端到端延迟的影响。
 
 \end{document}

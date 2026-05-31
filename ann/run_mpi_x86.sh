@@ -4,8 +4,18 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 DATA="${ANN_DATA:-../anndata}"
-CSV="${CSV:-files/results/mpi_results_x86_linux.csv}"
 MODE="${1:-full}"
+MODE="${MODE#--}"
+if [ "$MODE" != "quick" ] && [ "$MODE" != "full" ] && [ "$MODE" != "best" ]; then
+  echo "Usage: $0 [quick|full|best]" >&2
+  exit 2
+fi
+
+if [ "$MODE" = "best" ]; then
+  CSV="${CSV:-files/results/mpi_best_run_x86_linux.csv}"
+else
+  CSV="${CSV:-files/results/mpi_results_x86_linux.csv}"
+fi
 mkdir -p "$(dirname "$CSV")"
 
 if ! command -v mpic++ >/dev/null 2>&1; then
@@ -28,6 +38,10 @@ if [ "$MODE" = "quick" ]; then
   NPROBES=(16 32 64)
   REPEAT=1
   QUICK_FLAG="--quick"
+elif [ "$MODE" = "best" ]; then
+  NQ=1000
+  REPEAT="${REPEAT:-3}"
+  QUICK_FLAG=""
 else
   NQ=1000
   BASES=(25000 50000 100000)
@@ -47,6 +61,12 @@ run_one() {
     --nlist 512 --nprobe "$nprobe" --ef "$ef" --repeat "$REPEAT" \
     --nodes 1 --ppn "$np" $QUICK_FLAG $extra
 }
+
+if [ "$MODE" = "best" ]; then
+  run_one "${BEST_NP:-2}" hnsw nonblocking openmp "${BEST_THREADS:-4}" 100000 64 64 simd
+  echo "MPI best full-data result written to $CSV"
+  exit 0
+fi
 
 for nbase in "${BASES[@]}"; do
   for np in "${RANKS[@]}"; do
