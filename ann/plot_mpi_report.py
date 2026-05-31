@@ -296,7 +296,7 @@ def plot_stage_breakdown(rows_by_platform):
 
 
 def plot_hybrid_heatmap(rows_by_platform):
-    rows_labels = []
+    col_labels = []
     matrix = []
     ranks = [1, 2, 4]
     for platform in ["x86 full", "ARM quick"]:
@@ -315,18 +315,18 @@ def plot_hybrid_heatmap(rows_by_platform):
                     ]
                     vals.append(np.nan if not cand else min(cand, key=lambda x: x["latency_ms"])["latency_ms"])
                 if any(np.isfinite(vals)):
-                    rows_labels.append(f"{short} {method} T{t}")
+                    col_labels.append(f"{short}\n{method}\nT{t}")
                     matrix.append(vals)
-    matrix = np.array(matrix, dtype=float)
+    matrix = np.array(matrix, dtype=float).T
     finite = matrix[np.isfinite(matrix)]
-    plt.figure(figsize=(6.4, 4.5))
+    plt.figure(figsize=(7.4, 3.1))
     ax = plt.gca()
     im = ax.imshow(matrix, cmap="YlGnBu_r", norm=LogNorm(vmin=finite.min(), vmax=finite.max()))
-    ax.set_xticks(np.arange(len(ranks)))
-    ax.set_xticklabels([str(r) for r in ranks])
-    ax.set_yticks(np.arange(len(rows_labels)))
-    ax.set_yticklabels(rows_labels)
-    ax.set_xlabel("MPI ranks")
+    ax.set_xticks(np.arange(len(col_labels)))
+    ax.set_xticklabels(col_labels, fontsize=7.0)
+    ax.set_yticks(np.arange(len(ranks)))
+    ax.set_yticklabels([f"P{r}" for r in ranks])
+    ax.set_ylabel("MPI ranks")
     ax.set_title("OpenMP hybrid latency across platforms")
     for i in range(matrix.shape[0]):
         for j in range(matrix.shape[1]):

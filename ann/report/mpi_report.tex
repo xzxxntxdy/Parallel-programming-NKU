@@ -23,6 +23,7 @@
 \setlist[enumerate]{nosep,leftmargin=1.8em}
 \lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single,showstringspaces=false,numbers=left,numberstyle=\tiny}
 \newcommand{\figimg}[1]{\includegraphics[width=0.8\linewidth]{../files/figures/mpi_report/#1.pdf}}
+\newcommand{\figimgfull}[1]{\includegraphics[width=\linewidth]{../files/figures/mpi_report/#1.pdf}}
 \newcommand{\msq}{ms/query}
 \emergencystretch=2em
 
@@ -49,7 +50,7 @@ GitHub & \multicolumn{3}{l}{\href{https://github.com/xzxxntxdy/Parallel-programm
 \small
 本文实现并分析了 DEEP100K 向量检索任务的 MPI 并行 ANN 查询框架。实现采用 base-sharding：rank 0 读取 base/query/ground truth，使用 \texttt{MPI\_Scatterv} 将 base 向量按连续区间分发到各 MPI 进程，使用 \texttt{MPI\_Bcast} 广播 query；每个 rank 在本地分片上构建 IVF 或 HNSW 索引，维护局部 top-100 候选，最后由 rank 0 合并为全局 top-100 并计算 \textbf{recall@100}。在统一框架下实现了 Flat、IVF、HNSW、multi-HNSW 和 IVF-HNSW，并比较 blocking、nonblocking、point-to-point、one-sided、\texttt{MPI\_THREAD\_MULTIPLE}、MPI+OpenMP 混合并行以及 scalar/SIMD 距离核。
 
-x86 正式评测采用 100k base、1000 query，共 172 组结果；ARM/Kunpeng 结果采用 quick 规模 50k base、300 query，共 111 组结果。由于 ARM quick 只使用一半 base，但仍对照 100k ground truth，Flat 精确扫描的 raw recall@100 上限约为 0.5027，因此 ARM quick 的 recall 用于解释 reduced-base 趋势，不参与最终 recall@100$\ge0.95$ 阈值筛选。x86 full 中，在 recall@100$\ge0.95$ 下整体最低延迟为 HNSW 的 0.0312~\msq；若限定 MPI ranks$\ge2$，2 ranks + 4 OpenMP threads 的 HNSW 达到 0.0330~\msq、recall@100=0.9816；IVF 最优点为 8 ranks、nprobe=32，达到 0.0573~\msq、recall@100=0.9654。阶段计时表明，MPI 分片显著降低本地搜索时间，但进程数增大后通信和全局 merge 的比例上升；ARM quick 中通信占比在 4 ranks 下更明显，说明跨平台性能差异不仅来自 SIMD 指令宽度，也来自核心频率、内存带宽、MPI 运行时和 reduced-base 下的阶段比例。
+x86 正式评测采用 100k base、1000 query，共 172 组结果；ARM/Kunpeng 先采用 quick 规模 50k base、300 query 完成 111 组筛选，再对 HNSW 最优候选执行 100k base、1000 query 的 PBS/qsub 全量验证。由于 ARM quick 只使用一半 base，但仍对照 100k ground truth，Flat 精确扫描的 raw recall@100 上限约为 0.5027，因此 ARM quick 的 recall 用于解释 reduced-base 趋势，不参与最终 recall@100$\ge0.95$ 阈值筛选。x86 full 中，在 recall@100$\ge0.95$ 下整体最低延迟为 HNSW 的 0.0312~\msq；若限定 MPI ranks$\ge2$，2 ranks + 4 OpenMP threads 的 HNSW 达到 0.0330~\msq、recall@100=0.9816。ARM full qsub 中，同一 HNSW P2T4 配置达到 0.1318~\msq、recall@100=0.9814，验证了 ARM 平台上的最终阈值结果。阶段计时表明，MPI 分片显著降低本地搜索时间，但进程数增大后通信和全局 merge 的比例上升；跨平台性能差异不仅来自 SIMD 指令宽度，也来自核心频率、内存层次、MPI 运行时、作业调度环境和不同规模下的阶段比例。
 \end{abstract}
 
 \tableofcontents
@@ -69,13 +70,13 @@ x86 正式评测采用 100k base、1000 query，共 172 组结果；ARM/Kunpeng 
 \begin{equation}
 \mathrm{recall@100}(q)=\frac{|R_{100}(q)\cap G_{100}(q)|}{100},
 \end{equation}
-其中 $R_{100}(q)$ 是算法返回集合，$G_{100}(q)$ 是 ground truth。所有最终 x86 最优点均按 \textbf{recall@100$\ge0.95$ 下 latency 最小}选择。
+其中 $R_{100}(q)$ 是算法返回集合，$G_{100}(q)$ 是 ground truth。正式最优点均按 \textbf{recall@100$\ge0.95$ 下 latency 最小}选择；quick 结果只用于参数筛选和趋势判断，最终阈值判断使用 full-data 结果。
 
 \subsection{quick 规模的解释}
 
-ARM/Kunpeng 侧采用 quick sweep。该模式将 base 限制为 50k，query 限制为 300，但 ground truth 仍来自完整 DEEP100K 100k base。因此即使使用 Flat 精确扫描，也只能命中 ground truth 中落在前 50k base 的部分；当前 ARM quick 中 Flat raw recall@100 为 0.502733，构成该 reduced-base 设置下的上限。报告中 ARM quick 不用于证明最终 recall 阈值，而用于分析跨平台趋势、MPI 扩展性、通信占比、OpenMP 混合并行和 SIMD 可移植性。
+ARM/Kunpeng 侧采用“quick sweep + full validation”的两阶段流程。quick sweep 将 base 限制为 50k，query 限制为 300，但 ground truth 仍来自完整 DEEP100K 100k base。因此即使使用 Flat 精确扫描，也只能命中 ground truth 中落在前 50k base 的部分；当前 ARM quick 中 Flat raw recall@100 为 0.502733，构成该 reduced-base 设置下的上限。报告中 ARM quick 不用于证明最终 recall 阈值，而用于分析跨平台趋势、MPI 扩展性、通信占比、OpenMP 混合并行和 SIMD 可移植性。
 
-这种处理保留了两类结论：x86 full 给出正式 recall-latency 最优选择；ARM quick 给出同一代码在 AArch64/NEON 环境下的相对性能趋势。为了避免混淆，下文所有双平台图都明确标注 x86 full 100k/1000 与 ARM quick 50k/300。
+这种处理保留了三类结论：x86 full 给出本地正式 recall-latency 最优选择；ARM quick 给出同一代码在 AArch64/NEON 环境下的相对性能趋势；ARM full qsub 对 quick 筛出的 HNSW 候选做最终阈值验证。为了避免混淆，下文双平台趋势图明确标注 x86 full 100k/1000 与 ARM quick 50k/300，ARM full 结果则用单独表格汇报。
 
 % =====================================================================
 \section{MPI 任务分配与全局 top-k 合并}
@@ -241,6 +242,7 @@ C++ 标准线程版本按 query id 交错分配任务。IVF 的每个 query 访�
 \midrule
 x86 full & Windows + MSVC 19.43 + MS-MPI 10.1 & 100k base / 1000 query & 正式 recall@100 阈值筛选 \\
 ARM quick & ARM/Kunpeng + mpic++ + OpenMP & 50k base / 300 query & reduced-base 趋势与可移植性分析 \\
+ARM full qsub & ARM/Kunpeng + PBS/qsub + mpic++ + OpenMP & 100k base / 1000 query & ARM 最终候选全量验证 \\
 \bottomrule
 \end{tabular}
 }
@@ -257,8 +259,13 @@ ARM/Kunpeng quick 命令为：
 cd /home/$USER/ann
 ANN_DATA=/anndata bash run_mpi_arm_kunpeng.sh --quick
 \end{lstlisting}
+ARM/Kunpeng 全量验证命令为：
+\begin{lstlisting}[language=bash]
+cd /home/$USER/ann
+ANN_DATA=/anndata bash run_mpi_arm_complete.sh
+\end{lstlisting}
 
-集群提交使用 \texttt{qsub\_mpi.sh}，不使用 \texttt{test.sh}。脚本中项目目录为 \texttt{ann}，编译器为 \texttt{mpic++}，默认资源为 \texttt{nodes=1:ppn=8}，运行时 \texttt{NP=2}、每进程 \texttt{THREADS=4}，满足 \texttt{np <= nodes*ppn}、\texttt{nodes <= 4}、\texttt{ppn <= 8}。提交命令为：
+集群提交使用 \texttt{qsub\_mpi.sh}，不使用 \texttt{test.sh}。脚本中项目目录为 \texttt{ann}，编译器为 \texttt{mpic++}，默认资源为 \texttt{nodes=1:ppn=8}，运行时 \texttt{NP=2}、每进程 \texttt{THREADS=4}，满足 \texttt{np <= nodes*ppn}、\texttt{nodes <= 4}、\texttt{ppn <= 8}。qsub 用于 HNSW P2T4/P4T2/P8T1 等全量验证配置，提交命令为：
 \begin{lstlisting}[language=bash]
 cd ann
 qsub qsub_mpi.sh
@@ -270,7 +277,8 @@ qsub qsub_mpi.sh
 x86 full 与 ARM quick 的实验结果规模分别为：
 \begin{itemize}
     \item x86 full：100k base / 1000 query，共 172 组配置；
-    \item ARM quick：50k base / 300 query，共 111 组配置。
+    \item ARM quick：50k base / 300 query，共 111 组配置；
+    \item ARM full qsub：100k base / 1000 query，对 quick 筛出的 HNSW 候选进行 1/2 节点、2/4/8 ranks、1/2/4 threads 的全量验证，并补充 perf profiling。
 \end{itemize}
 实验矩阵覆盖内容如下：
 \begin{itemize}
@@ -283,7 +291,7 @@ x86 full 与 ARM quick 的实验结果规模分别为：
     \item profiling 阶段：build、distribute、search、comm、merge、total、work imbalance。
 \end{itemize}
 
-实验顺序先覆盖不同 base 规模下的 Flat/IVF 和 nprobe，再固定 100k base 比较通信方式、OpenMP threads、\texttt{std::thread}、\texttt{MPI\_THREAD\_MULTIPLE}、scalar/SIMD 和图索引组合。x86 full 默认每组重复 3 次并取稳定最低 latency；ARM quick 为了降低集群占用采用单次运行，保留相同算法和并行维度，便于观察跨平台趋势。
+实验顺序先覆盖不同 base 规模下的 Flat/IVF 和 nprobe，再固定 100k base 比较通信方式、OpenMP threads、\texttt{std::thread}、\texttt{MPI\_THREAD\_MULTIPLE}、scalar/SIMD 和图索引组合。x86 full 默认每组重复 3 次并取稳定最低 latency；ARM quick 为了降低集群占用采用单次运行，保留相同算法和并行维度，便于观察跨平台趋势。ARM full qsub 不再重复大范围 sweep，而是把 quick 与 x86 full 共同指向的 HNSW P2T4/P4T2/P8T1 候选放回 100k/1000 数据规模验证，最终按 recall@100$\ge0.95$ 下 latency 最小选择。
 
 % =====================================================================
 \section{总体结果与跨平台趋势}
@@ -353,15 +361,45 @@ IVF-HNSW & 0.497767 & 0.990 & 0.6461 \\
 
 ARM quick 的更合理读法是归一化到 Flat 上限。IVF 最高 raw recall 为 0.4953，达到 Flat 上限的 98.5\%；HNSW 和 multi-HNSW 分别达到约 99.8\% 和 100.0\%。这说明 ARM 侧没有出现算法失效，低于 0.95 是数据规模与 ground truth 不一致造成的评价上限问题。跨平台对比因此不能把 ARM quick 的 raw recall 与 x86 full 的正式 recall 混排，只能比较趋势：nprobe 增大时 recall 上升、ranks 增大时搜索缩短、通信占比随本地搜索缩短而上升。
 
+\begin{table}[H]
+\centering
+\small
+\caption{ARM/Kunpeng full-data qsub 验证：HNSW + OpenMP + SIMD + nonblocking}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+节点 & ranks & threads & latency & recall & build(s) & search & comm & merge \\
+\midrule
+1$\times$8 & 2 & 4 & 0.1318 & 0.9814 & 20.75 & 106.7 & 2.1 & 23.9 \\
+1$\times$8 & 4 & 2 & 0.2512 & 0.9930 & 9.80 & 220.3 & 36.1 & 29.9 \\
+2$\times$4 & 4 & 2 & 0.2188 & 0.9930 & 8.92 & 189.5 & 25.7 & 28.9 \\
+2$\times$8 & 8 & 1 & 0.4315 & 0.9979 & 4.22 & 393.3 & 48.9 & 35.8 \\
+\bottomrule
+\end{tabular}
+\label{tab:arm_full_qsub}
+\end{table}
+
+表 \ref{tab:arm_full_qsub} 是 ARM 平台上用于最终判断的 full-data 结果。四个 qsub 配置均达到 recall@100$\ge0.95$，其中 1 节点、2 ranks、每 rank 4 个 OpenMP 线程的 P2T4 配置延迟最低，为 0.1318~\msq、recall@100=0.9814。P4T2 和 P8T1 的 recall 更高，但延迟显著上升，说明在 HNSW 已经降低访问点数后，继续增加 rank 会让多图搜索、候选回收和 root merge 的成本超过分片收益。2 节点 P4T2 比 1 节点 P4T2 更快，表明跨节点资源增加可以缓解部分本地搜索压力；但它仍慢于 1 节点 P2T4，说明当前规模下跨节点通信和更多分片图的额外开销没有被更高并行度抵消。
+
+将同一 HNSW P2T4 路径放在 x86 与 ARM full-data 上比较，x86 full 的 0.0330~\msq 与 ARM qsub 的 0.1318~\msq 相差约 4.0$\times$。两者 recall 几乎一致，差异主要来自单核频率、SIMD 宽度、OpenMP 运行时、MPI 实现以及 HNSW 随机访存对 cache/内存层次的敏感性。这个结果也解释了为什么 ARM quick 可以用于筛选趋势，却必须用 full-data qsub 做最终确认：quick 的 reduced-base raw recall 不能判断阈值，但它筛出的 rank-thread 方向在 full-data 上仍成立。
+
 % =====================================================================
 \section{IVF 参数消融与扩展性}
 % =====================================================================
 
 \begin{figure}[H]
 \centering
-\figimg{fig_mpi_03_x86_ivf_nprobe_tradeoff}
+\begin{minipage}{0.49\linewidth}
+\centering
+\figimgfull{fig_mpi_03_x86_ivf_nprobe_tradeoff}
 \caption{x86 full 中 IVF nprobe 的 recall-latency trade-off，点旁数字为 nprobe。}
 \label{fig:x86_ivf}
+\end{minipage}\hfill
+\begin{minipage}{0.49\linewidth}
+\centering
+\figimgfull{fig_mpi_04_arm_ivf_quick_tradeoff}
+\caption{ARM quick 中 IVF nprobe 趋势。raw recall 对照 100k ground truth，最高值受 50k base 限制。}
+\label{fig:arm_ivf}
+\end{minipage}
 \end{figure}
 
 x86 full 中，nprobe=16 在所有 ranks 下都低于 recall 阈值；nprobe=32 在 8 ranks 下达到 0.9654 recall 和 0.0573~\msq，是 IVF 的正式最优点；nprobe=64/128/256 继续提高 recall，但 latency 增长更快。该趋势符合 IVF 的复杂度：扫描链数增加会近似线性增加候选访问量，而 recall 提升逐渐饱和。
@@ -385,13 +423,6 @@ ranks & nprobe=16 & nprobe=32 & nprobe=64 & nprobe=128 & nprobe=256 \\
 \label{tab:x86_nprobe}
 \end{table}
 
-\begin{figure}[H]
-\centering
-\figimg{fig_mpi_04_arm_ivf_quick_tradeoff}
-\caption{ARM quick 中 IVF nprobe 趋势。raw recall 对照 100k ground truth，最高值受 50k base 限制。}
-\label{fig:arm_ivf}
-\end{figure}
-
 ARM quick 中，nprobe 从 16 增加到 64 时 raw recall 从约 0.451--0.456 提高到约 0.494--0.495，已经接近 Flat 上限 0.5027；latency 则从 P4 的 0.1332~\msq 增至 0.2929~\msq。该趋势与 x86 full 一致：更大的 nprobe 提高覆盖面，但带来更多倒排链扫描。不同的是，ARM quick 中由于 base 只有 50k，raw recall 的绝对值被规模限制，不能用 0.95 阈值筛选。
 
 ARM 的 P1/P2/P4 曲线斜率还说明了另一个问题：当 quick 模式把本地数据减半后，P4 下每 rank 的倒排链很短，nprobe=16 已能获得较低延迟；但如果为了逼近 reduced-base 上限而使用 nprobe=64，latency 会明显上升。换言之，ARM quick 中 IVF 的最低延迟点和最高 raw recall 点并不相同，这与 x86 full 中“刚达阈值最优”的选择逻辑一致，只是 quick raw recall 上限不同。
@@ -402,9 +433,18 @@ ARM 的 P1/P2/P4 曲线斜率还说明了另一个问题：当 quick 模式把�
 
 \begin{figure}[H]
 \centering
-\figimg{fig_mpi_05_comm_methods}
+\begin{minipage}{0.49\linewidth}
+\centering
+\figimgfull{fig_mpi_05_comm_methods}
 \caption{4 ranks、IVF nprobe=64 下通信方式对 latency 和通信占比的影响。}
 \label{fig:comm}
+\end{minipage}\hfill
+\begin{minipage}{0.49\linewidth}
+\centering
+\figimgfull{fig_mpi_06_stage_breakdown}
+\caption{IVF nprobe=64 的 search、comm、merge 阶段占比。每个平台使用各 ranks 下最低 latency 的通信方式。}
+\label{fig:breakdown}
+\end{minipage}
 \end{figure}
 
 图 \ref{fig:comm} 比较了四种结果回收方式。x86 full 中四种方式的 latency 均约为 0.110--0.113~\msq，通信占比约 2.5\%--4.1\%。ARM quick 中 latency 约为 0.288--0.304~\msq，通信占比约 15.7\%--20.1\%，明显高于 x86。这表明 reduced-base 场景下本地搜索更短，通信和同步开销更容易暴露；同时 ARM/Kunpeng 平台的 MPI 实现、进程间通信路径和内存系统也可能放大该占比。
@@ -443,13 +483,6 @@ x86 full 中，\texttt{MPI\_THREAD\_FUNNELED} 与 \texttt{MPI\_THREAD\_MULTIPLE}
 \section{阶段 profiling、负载均衡与 cache locality}
 % =====================================================================
 
-\begin{figure}[H]
-\centering
-\figimg{fig_mpi_06_stage_breakdown}
-\caption{IVF nprobe=64 的 search、comm、merge 阶段占比。每个平台使用各 ranks 下最低 latency 的通信方式。}
-\label{fig:breakdown}
-\end{figure}
-
 图 \ref{fig:breakdown} 展示了阶段比例。x86 full 中，P1/P2/P4 的 search 占比分别约 96.5\%、90.9\%、81.8\%，merge 占比分别约 3.4\%、7.1\%、14.4\%。ARM quick 中，P1/P2/P4 的 search 占比分别约 98.2\%、94.3\%、77.5\%，P4 下通信占比上升到约 14.3\%。这说明 MPI 扩展的瓶颈会随进程数从本地搜索转向通信和 merge；ARM quick 因问题规模更小，本地搜索被切短后通信占比更快上升。
 
 阶段比例可以用 Amdahl 定律解释。若 search 阶段占比为 $s$，理想地把 search 加速 $P$ 倍后，总加速上界约为 $1/((1-s)+s/P)$。P1 时 search 占比接近 96\%，继续并行化有较大空间；P4 后 x86 merge 占比已超过 14\%，即使本地 search 继续变快，串行 merge 和通信也会限制端到端收益。ARM quick 的 P4 search 占比更低，说明同样的 MPI rank 数在小规模问题上更早进入通信/同步主导区间。
@@ -460,7 +493,7 @@ cache locality 方面，MPI 分片能改善本地扫描数组和 top-k 堆的局
 
 cache 优化不是单独的代码技巧，而是由数据划分改变工作集大小。Flat 扫描按连续内存访问，分片后每 rank 顺序读取更小的 base 区间，硬件预取更稳定；IVF 访问倒排链，链内局部性较好，但多个链之间跳转会破坏连续访问。HNSW 的邻接访问更随机，cache 友好性弱于 Flat/IVF，但访问点数少，随机访存的总量被压低。由此可见，不同索引的 cache 问题不同：Flat 依赖带宽和 SIMD，IVF 依赖链布局和 nprobe，HNSW 依赖减少图访问点数。
 
-ARM 主节点上额外使用 \texttt{perf stat} 对 HNSW P2T4 的 full-data 配置做硬件计数器补充。该次 profiling 的 \texttt{recall@100}=0.98135，程序侧 latency 为 0.1503~\msq；\texttt{perf} 记录到约 $1.109\times10^{11}$ cycles、$1.287\times10^{11}$ instructions，IPC 约 1.16，cache references 约 $4.024\times10^{10}$，cache misses 约 $5.947\times10^8$，cache miss rate 为 1.478\%。该计数器结果只用于解释指令与 cache 行为；正式 ARM latency/recall 仍以 PBS qsub full-data 结果为准，因为 \texttt{perf} 包裹和主节点运行环境会引入额外测量开销。
+ARM 主节点上额外使用 \texttt{perf stat} 对 HNSW P2T4 的 full-data 配置做硬件计数器补充。该次 profiling 的 \texttt{recall@100}=0.98135，程序侧 latency 为 0.1503~\msq；\texttt{perf} 记录到约 $1.109\times10^{11}$ cycles、$1.287\times10^{11}$ instructions，IPC 约 1.16，cache references 约 $4.024\times10^{10}$，cache misses 约 $5.947\times10^8$，cache miss rate 为 1.478\%。该计数器结果只用于解释指令与 cache 行为；正式 ARM latency/recall 仍以 PBS qsub full-data 结果为准，因为 \texttt{perf} 包裹和主节点运行环境会引入额外测量开销。与 qsub P2T4 的 0.1318~\msq 相比，perf 包裹运行约慢 14\%，但 recall 完全一致，说明差异来自测量环境而不是算法分支。IPC 只有 1.16，而 cache miss rate 不高，表明 HNSW full-data 查询并非简单受最后一级 cache miss 率单独支配；分支判断、候选优先队列、邻接表间接访问和 OpenMP 调度共同限制了指令流水线利用率。
 
 build 阶段也影响算法选择。IVF 的构建主要是本地 k-means 和倒排链填充，参数 nprobe 只影响查询，不需要重建索引；因此 IVF 适合做细粒度参数消融。HNSW 的 ef、M 和数据分片会影响图结构，构建时间明显高于 IVF，但查询阶段访问点数少。IVF-HNSW 同时支付 IVF 构建和多个簇内 HNSW 构建，若查询量不足以摊销 build 成本，端到端收益会进一步下降。报告的 latency 指标只统计在线查询，但工程选择仍要考虑索引更新频率。
 
@@ -471,7 +504,7 @@ build 阶段也影响算法选择。IVF 的构建主要是本地 k-means 和倒�
 \begin{figure}[H]
 \centering
 \figimg{fig_mpi_07_openmp_hybrid_heatmap}
-\caption{OpenMP 混合并行热力图。数值为 latency，列为 MPI ranks。}
+\caption{OpenMP 混合并行热力图。数值为 latency，行为 MPI ranks，列为平台、算法和线程配置。}
 \label{fig:openmp}
 \end{figure}
 
@@ -480,6 +513,8 @@ build 阶段也影响算法选择。IVF 的构建主要是本地 k-means 和倒�
 OpenMP 和 MPI 的组合存在资源分配边界。固定核心数下，增加 ranks 会减少每 rank 数据量，但也增加候选回收和进程调度；增加 threads 会提高单 rank 内 query 并发，但多个线程共享同一个本地索引和内存带宽。IVF 的 query 之间几乎独立，适合 OpenMP 批并行；HNSW 单 query 访问点少，T4 后继续增加 MPI rank 的收益很小。最终 P2T4 成为 MPI 多进程最优点，反映出“少量分片 + 足够进程内并发”比“很多分片 + 每分片很小任务”更适合该数据规模。
 
 ARM quick 中 OpenMP T2 仍有明显收益：IVF P4 从 0.295 降至 0.207~\msq，HNSW P4 从 0.334 降至 0.249~\msq。由于 ARM quick 只覆盖到 T2，不能判断 T4 是否继续有效；但趋势表明 query-level 并行在 ARM 上同样可移植，收益主要取决于每 rank 剩余工作量是否足够大。
+
+ARM full qsub 对这一判断做了更直接的验证。P2T4 在 100k/1000 数据上达到 0.1318~\msq，而 P4T2 和 P8T1 分别退化到 0.2512~\msq 和 0.4315~\msq；也就是说，在同样 8 个硬件线程预算附近，把并行度更多分给 rank 内 OpenMP，比把数据拆成更多 HNSW 子图更有利。原因是 HNSW 的单 query 搜索路径较短，rank 数增大后每个局部图仍要执行入口搜索、候选队列维护和 top-100 返回，root 还要合并更多候选；OpenMP 则主要并行化 query batch，不改变全局候选矩阵的 rank 维度，因此 P2T4 成为 ARM 和 x86 上共同稳定的 MPI 多进程候选。
 
 从 x86 的 rank-thread 组合看，HNSW P1T1/P1T2/P1T4 分别为 0.0789、0.0473、0.0312~\msq，线程并行收益明显；P2T4 为 0.0330~\msq，已经接近 P1T4；P4T4 和 P8T4 分别退化到 0.0438、0.0596~\msq，说明继续增加 ranks 后 merge 和进程调度超过了数据分片收益。IVF 的表现不同：P1T4 为 0.1045~\msq，P4T4 为 0.0625~\msq，P8T4 为 0.0615~\msq，说明 IVF 仍能从 MPI 分片中受益，但 P8 后 OpenMP 的边际收益已经很小。这个差异来自算法内部访问量：IVF 仍有较多链内距离计算，HNSW 则更早进入固定开销主导区。
 
@@ -553,13 +588,13 @@ rerank 方面，本文的 Flat、IVF、HNSW 和组合索引在候选进入堆时
 
 \subsection{平台差异}
 
-x86 full 使用 AVX2 和较高单核频率，IVF/HNSW 查询延迟显著低于 ARM quick 的同类路径；ARM NEON 在 Flat 上加速比更高，说明 ARM 标量路径更慢且向量化收益明显。ARM quick 中通信占比更高，既与 reduced-base 导致本地搜索缩短有关，也可能与 MPI 运行时和内存系统有关。跨平台比较不能只看绝对 latency，应同时看问题规模、raw recall 上限、stage breakdown 和 SIMD speedup。
+x86 full 使用 AVX2 和较高单核频率，IVF/HNSW 查询延迟显著低于 ARM quick 和 ARM full qsub 的同类路径；ARM NEON 在 Flat 上加速比更高，说明 ARM 标量路径更慢且向量化收益明显。ARM quick 中通信占比更高，既与 reduced-base 导致本地搜索缩短有关，也可能与 MPI 运行时和内存系统有关。ARM full qsub 则给出了同规模判断：HNSW P2T4 的 latency 为 0.1318~\msq，是 x86 同配置 0.0330~\msq 的约 4.0 倍，但 recall 均约为 0.981。跨平台比较不能只看绝对 latency，应同时看问题规模、raw recall 上限、stage breakdown、SIMD speedup 和作业运行方式。
 
-更具体地说，x86 full 的 100k base/1000 query 让本地搜索占比更高，通信和 root merge 被较长的 search 阶段摊薄；ARM quick 的 50k base/300 query 缩短了本地搜索，固定通信同步和进程启动波动更容易在 per-query latency 中显现。SIMD 方面，AVX2 一次处理 8 个 float，NEON 一次处理 4 个 float，但实际加速比还受标量基线、编译器调度和内存带宽影响。Flat 中距离核占比最高，所以 NEON 加速比可以很高；IVF/HNSW 中堆维护、倒排链跳转和图访问占比提高，指令宽度差异就不再直接等价于端到端速度差异。
+更具体地说，x86 full 的 100k base/1000 query 让本地搜索占比更高，通信和 root merge 被较长的 search 阶段摊薄；ARM quick 的 50k base/300 query 缩短了本地搜索，固定通信同步和进程启动波动更容易在 per-query latency 中显现。ARM full qsub 消除了 reduced-base 的 recall 上限问题，但保留了 Kunpeng 平台的频率、内存层次、MPI 实现和 PBS 运行环境差异。SIMD 方面，AVX2 一次处理 8 个 float，NEON 一次处理 4 个 float，但实际加速比还受标量基线、编译器调度和内存带宽影响。Flat 中距离核占比最高，所以 NEON 加速比可以很高；IVF/HNSW 中堆维护、倒排链跳转和图访问占比提高，指令宽度差异就不再直接等价于端到端速度差异。
 
 \subsection{优化过程复盘}
 
-整体优化可以分为五个阶段。第一阶段实现 Flat base-sharding，用精确 recall 验证数据切分、全局 id、候选回收和 root merge。这个阶段的关键不是追求最低延迟，而是确保 P1/P2/P4/P8 返回结果与单机精确语义一致；Flat P8 recall=1.0 说明通信与 merge 没有破坏 top-100 排序。
+整体优化可以分为六个阶段。第一阶段实现 Flat base-sharding，用精确 recall 验证数据切分、全局 id、候选回收和 root merge。这个阶段的关键不是追求最低延迟，而是确保 P1/P2/P4/P8 返回结果与单机精确语义一致；Flat P8 recall=1.0 说明通信与 merge 没有破坏 top-100 排序。
 
 第二阶段加入 SIMD 距离核。Flat 标量 P1 为 3.0393~\msq，Flat SIMD P1 降到 1.7449~\msq；P8 下标量为 0.4937~\msq，SIMD 为 0.1928~\msq。这个结果说明距离计算仍是扫描型方法的主瓶颈，也验证了 kernel 分发在 MPI 程序中没有引入额外语义差异。
 
@@ -569,19 +604,21 @@ x86 full 使用 AVX2 和较高单核频率，IVF/HNSW 查询延迟显著低于 A
 
 第五阶段探索通信方式、\texttt{MPI\_THREAD\_MULTIPLE}、multi-HNSW 和 IVF-HNSW。结果显示通信 API 的差异小于算法参数差异，MULTIPLE 在主线程通信结构下没有明显收益，组合图索引能提高 recall 但不一定降低延迟。因此最终代码保留这些分支作为实验和分析工具，而不是把它们设为默认最快路径。
 
+第六阶段在 ARM/Kunpeng 上先用 quick sweep 检查趋势，再把 HNSW 候选放回 full-data qsub 验证。quick 结果用于判断 NEON、OpenMP、ranks 和通信方式的相对行为，full-data 结果用于最终阈值判断。验证表明 P2T4 在 ARM 上仍是更合理的 MPI 多进程配置；P4T2 和 P8T1 虽然提高 recall，但 latency 受多分片图搜索、候选回收和 merge 影响明显上升。
+
 \subsection{最终选择}
 
 x86 full 的最终选择按 recall@100$\ge0.95$ 和 latency 最小确定。若允许单 rank + OpenMP，HNSW P1T4 是最低延迟点；若强调 MPI 多进程参与，HNSW P2T4 是最低延迟点；若选择倒排索引路径，IVF P8 nprobe=32 是最优点。Flat 只作为精确基线；IVF-HNSW 和 multi-HNSW 提供了图索引组合实验和 trade-off 分析，但不是最低延迟方案。
 
-最终 MPI 多进程配置为 HNSW、nonblocking、OpenMP、SIMD、2 ranks、4 threads、100k base、1000 query、ef=64、repeat=3。该配置不是全表最低的 P1T4，而是在保留 MPI 多进程参与的前提下满足 recall 阈值并取得最低 latency。完整消融则用于解释为什么更多 ranks、更高 ef 或更复杂的组合图索引没有成为最终选择。
+最终 MPI 多进程配置为 HNSW、nonblocking、OpenMP、SIMD、2 ranks、4 threads、100k base、1000 query、ef=64、repeat=3。该配置不是 x86 全表最低的 P1T4，而是在保留 MPI 多进程参与的前提下满足 recall 阈值并取得最低 latency；在 ARM full qsub 上，该配置同样是已验证候选中的最低延迟点。完整消融解释了为什么更多 ranks、更高 ef 或更复杂的组合图索引没有成为最终选择。
 
 % =====================================================================
 \section{结论}
 % =====================================================================
 
-本文完成了 MPI base-sharding ANN 查询框架，实现了本地索引构建、局部 top-100 维护、多种通信回收方式和全局 top-100 merge，并将 SIMD 与 OpenMP 混合并行纳入同一实验矩阵。x86 full 中，HNSW P1T4 达到 0.0312~\msq、recall@100=0.9545；MPI 多进程条件下 HNSW P2T4 达到 0.0330~\msq、recall@100=0.9816；IVF P8 nprobe=32 达到 0.0573~\msq、recall@100=0.9654。ARM quick 结果显示同一代码在 AArch64/NEON 上可运行，并呈现与 x86 一致的 nprobe、ranks、OpenMP 和 SIMD 趋势，但 raw recall 受 50k base 限制，不参与最终阈值筛选。
+本文完成了 MPI base-sharding ANN 查询框架，实现了本地索引构建、局部 top-100 维护、多种通信回收方式和全局 top-100 merge，并将 SIMD 与 OpenMP 混合并行纳入同一实验矩阵。x86 full 中，HNSW P1T4 达到 0.0312~\msq、recall@100=0.9545；MPI 多进程条件下 HNSW P2T4 达到 0.0330~\msq、recall@100=0.9816；IVF P8 nprobe=32 达到 0.0573~\msq、recall@100=0.9654。ARM quick 结果显示同一代码在 AArch64/NEON 上呈现与 x86 一致的 nprobe、ranks、OpenMP 和 SIMD 趋势；ARM full qsub 进一步验证 HNSW P2T4 在 100k/1000 数据上达到 0.1318~\msq、recall@100=0.9814，因此 ARM 平台也有满足阈值的最终候选。
 
-实验的主要结论是：MPI 分片对扫描型检索和 IVF 有稳定收益；SIMD 仍是距离计算核心优化；OpenMP 在每 rank 工作量充足时有效；通信方式差异小于算法和 nprobe 差异；当本地搜索足够快时，merge 和通信会成为扩展瓶颈。后续可围绕 query batch 流水线、树形 top-k reduce、top-p 自适应返回、全局 centroid 同步和图索引分片剪枝继续优化。
+实验的主要结论是：MPI 分片对扫描型检索和 IVF 有稳定收益；SIMD 仍是距离计算核心优化；OpenMP 在每 rank 工作量充足时有效；通信方式差异小于算法和 nprobe 差异；当本地搜索足够快时，merge 和通信会成为扩展瓶颈。双平台结果说明 P2T4 这类“少量 MPI 分片 + rank 内批并行”的配置比盲目增加 ranks 更稳定。后续可围绕 query batch 流水线、树形 top-k reduce、top-p 自适应返回、全局 centroid 同步和图索引分片剪枝继续优化。
 
 \begin{thebibliography}{9}
 \bibitem{hnsw}
