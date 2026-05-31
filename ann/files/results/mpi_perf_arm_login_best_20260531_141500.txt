@@ -1,0 +1,16 @@
+# started on Sun May 31 14:12:05 2026
+
+
+ Performance counter stats for '/usr/local/bin/mpiexec -n 2 ./main --data /anndata --csv files/results/mpi_perf_arm_login_best_20260531_141500.csv --method hnsw --comm nonblocking --thread-model openmp --kernel simd --threads 4 --nbase 100000 --nq 1000 --nlist 512 --nprobe 64 --ef 64 --repeat 3 --nodes 1 --ppn 8':
+
+      110928029073      cycles:u                                                    
+      128749198356      instructions:u            #    1.16  insn per cycle         
+       40237886720      cache-references:u                                          
+         594719487      cache-misses:u            #    1.478 % of all cache refs    
+
+      20.700325703 seconds time elapsed
+
+      42.994803000 seconds user
+       0.215108000 seconds sys
+
+

@@ -1,0 +1,12 @@
+metric,value,unit,notes
+cycles,110928029073,count,user-space perf stat on master_ubss1
+instructions,128749198356,count,user-space perf stat on master_ubss1
+ipc,1.16,instructions_per_cycle,reported by perf
+cache_references,40237886720,count,user-space perf stat on master_ubss1
+cache_misses,594719487,count,user-space perf stat on master_ubss1
+cache_miss_rate,1.478,percent,reported by perf
+elapsed_time,20.700325703,seconds,perf wall-clock elapsed time
+user_time,42.994803,seconds,perf user time across processes/threads
+sys_time,0.215108,seconds,perf system time
+latency_ms,0.150298,ms_per_query,from MPI-ANN CSV
+recall_at_100,0.981350,ratio,from MPI-ANN CSV

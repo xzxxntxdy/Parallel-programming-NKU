@@ -1,0 +1,8 @@
+timestamp=20260531_134926
+ANN_DATA=/anndata
+These jobs run full-data HNSW nonblocking OpenMP SIMD.
+
+node1_p2t4=36674.master_ubss1
+node1_p4t2=36675.master_ubss1
+node2_p4t2=36676.master_ubss1
+node2_p8t1=36677.master_ubss1

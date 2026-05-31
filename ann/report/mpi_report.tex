@@ -460,6 +460,8 @@ cache locality 方面，MPI 分片能改善本地扫描数组和 top-k 堆的局
 
 cache 优化不是单独的代码技巧，而是由数据划分改变工作集大小。Flat 扫描按连续内存访问，分片后每 rank 顺序读取更小的 base 区间，硬件预取更稳定；IVF 访问倒排链，链内局部性较好，但多个链之间跳转会破坏连续访问。HNSW 的邻接访问更随机，cache 友好性弱于 Flat/IVF，但访问点数少，随机访存的总量被压低。由此可见，不同索引的 cache 问题不同：Flat 依赖带宽和 SIMD，IVF 依赖链布局和 nprobe，HNSW 依赖减少图访问点数。
 
+ARM 主节点上额外使用 \texttt{perf stat} 对 HNSW P2T4 的 full-data 配置做硬件计数器补充。该次 profiling 的 \texttt{recall@100}=0.98135，程序侧 latency 为 0.1503~\msq；\texttt{perf} 记录到约 $1.109\times10^{11}$ cycles、$1.287\times10^{11}$ instructions，IPC 约 1.16，cache references 约 $4.024\times10^{10}$，cache misses 约 $5.947\times10^8$，cache miss rate 为 1.478\%。该计数器结果只用于解释指令与 cache 行为；正式 ARM latency/recall 仍以 PBS qsub full-data 结果为准，因为 \texttt{perf} 包裹和主节点运行环境会引入额外测量开销。
+
 build 阶段也影响算法选择。IVF 的构建主要是本地 k-means 和倒排链填充，参数 nprobe 只影响查询，不需要重建索引；因此 IVF 适合做细粒度参数消融。HNSW 的 ef、M 和数据分片会影响图结构，构建时间明显高于 IVF，但查询阶段访问点数少。IVF-HNSW 同时支付 IVF 构建和多个簇内 HNSW 构建，若查询量不足以摊销 build 成本，端到端收益会进一步下降。报告的 latency 指标只统计在线查询，但工程选择仍要考虑索引更新频率。
 
 % =====================================================================

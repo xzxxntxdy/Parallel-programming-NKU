@@ -19,7 +19,11 @@ submit_one() {
   local threads="$3"
   local label="$4"
   local csv="$RESULT_DIR/mpi_qsub_${label}_${TS}.csv"
+  local out="$RESULT_DIR/mpi_qsub_${label}_${TS}.o"
+  local err="$RESULT_DIR/mpi_qsub_${label}_${TS}.e"
   qsub -N "ann_${label}" \
+    -o "$out" \
+    -e "$err" \
     -l "nodes=${nodespec}" \
     -v "NP=${np},THREADS=${threads},CSV=${csv},ANN_DATA=${ANN_DATA}" \
     qsub_mpi.sh

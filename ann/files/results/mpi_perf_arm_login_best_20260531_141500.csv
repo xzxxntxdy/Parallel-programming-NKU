@@ -1,0 +1,2 @@
+experiment,method,kernel,platform,mpi_size,nodes,ppn,nthreads,thread_model,comm,nbase,nq,k,nlist,nprobe,ef,latency_ms,recall@100,build_sec,distribute_ms,search_ms,comm_ms,merge_ms,total_ms,work_imbalance,mpi_thread_required,mpi_thread_provided,notes
+MPI-ANN,hnsw,simd,x86_or_cluster,2,1,8,4,openmp,nonblocking,100000,1000,100,512,64,64,0.150298,0.981350,20.138687,40.704489,124.702692,8.791924,24.686575,150.298357,1.000000,1,1,hnsw-comm=nonblocking-tm=openmp-kernel=simd-nl=512-npb=64-ef=64;full
