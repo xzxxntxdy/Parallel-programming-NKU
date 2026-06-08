@@ -28,7 +28,7 @@ if ! command -v mpiexec >/dev/null 2>&1 && ! command -v mpirun >/dev/null 2>&1; 
 fi
 
 LAUNCHER="$(command -v mpiexec || command -v mpirun)"
-mpic++ -O3 -std=c++17 -fopenmp -march=native -I. -Ihnswlib main.cc -o main
+mpic++ -O3 -std=c++17 -fopenmp -march=native -I. -I.. -I../hnswlib main.cc -o main
 
 if [ "$MODE" = "quick" ]; then
   NQ=300

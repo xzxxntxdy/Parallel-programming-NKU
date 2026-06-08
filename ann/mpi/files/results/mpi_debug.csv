@@ -1,0 +1,2 @@
+experiment,method,platform,mpi_size,nodes,ppn,nthreads,thread_model,comm,nbase,nq,k,nlist,nprobe,ef,latency_ms,recall@100,build_sec,distribute_ms,search_ms,comm_ms,merge_ms,total_ms,work_imbalance,mpi_thread_required,mpi_thread_provided,notes
+MPI-ANN,flat-comm=blocking-tm=stdthread-nl=512-npb=512-ef=64,x86_or_cluster,1,1,1,1,stdthread,blocking,50000,300,100,512,512,64,0.517852,0.502733,0.000000,34.652000,151.198600,0.096900,4.060000,155.355600,1.000000,1,1,quick

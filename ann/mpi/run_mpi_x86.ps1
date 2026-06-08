@@ -38,7 +38,7 @@ $compiler = Get-Command mpic++ -ErrorAction SilentlyContinue
 if (-not $compiler) { $compiler = Get-Command mpicxx -ErrorAction SilentlyContinue }
 if (-not $compiler) { $compiler = Get-Command mpiicpx -ErrorAction SilentlyContinue }
 if ($compiler) {
-    & $compiler.Source -O3 -std=c++17 -fopenmp -mavx2 -mfma -I. -Ihnswlib main.cc -o $exe
+    & $compiler.Source -O3 -std=c++17 -fopenmp -mavx2 -mfma -I. -I.. -I../hnswlib main.cc -o $exe
     if ($LASTEXITCODE -ne 0) { throw "MPI C++ compilation failed." }
 } else {
     $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
@@ -54,7 +54,7 @@ if ($compiler) {
         throw "MSVC found but vcvars64.bat is unavailable."
     }
     $env:PATH = "$mpiBin;$env:PATH"
-    $cmd = "`"$vcvars`" && set PATH=$mpiBin;%PATH% && cl /nologo /O2 /arch:AVX2 /std:c++17 /EHsc /openmp /I. /Ihnswlib /I`"$mpiInclude`" main.cc /link /LIBPATH:`"$mpiLib`" msmpi.lib /OUT:$exe"
+    $cmd = "`"$vcvars`" && set PATH=$mpiBin;%PATH% && cl /nologo /O2 /arch:AVX2 /std:c++17 /EHsc /openmp /I. /I.. /I../hnswlib /I`"$mpiInclude`" main.cc /link /LIBPATH:`"$mpiLib`" msmpi.lib /OUT:$exe"
     cmd /c $cmd
     if ($LASTEXITCODE -ne 0) { throw "MSVC/MS-MPI compilation failed." }
 }

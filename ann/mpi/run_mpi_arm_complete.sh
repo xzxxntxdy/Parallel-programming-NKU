@@ -47,7 +47,7 @@ echo "[4/4] ARM perf profiling for best run"
 if command -v perf >/dev/null 2>&1; then
   LAUNCHER="$(command -v mpiexec || command -v mpirun)"
   if [ ! -x ./main ]; then
-    mpic++ -O3 -std=c++17 -fopenmp -march=native -I. -Ihnswlib main.cc -o main
+    mpic++ -O3 -std=c++17 -fopenmp -march=native -I. -I.. -I../hnswlib main.cc -o main
   fi
   perf stat -e cycles,instructions,cache-references,cache-misses \
     -o "$RESULT_DIR/mpi_perf_arm_best_${TS}.txt" \

@@ -7,7 +7,7 @@
 set -eu
 
 MASTER=${MASTER:-master_ubss1}
-PROJECT_DIR=${PROJECT_DIR:-/home/${USER}/Parallel-programming-NKU/ann}
+PROJECT_DIR=${PROJECT_DIR:-/home/${USER}/Parallel-programming-NKU/ann/mpi}
 EXE=main
 NP=${NP:-2}
 THREADS=${THREADS:-4}
@@ -29,7 +29,7 @@ if [ ! -d "$RUN_DIR" ]; then
     scp -r "${MASTER}:${PROJECT_DIR}" "$WORK_ROOT/" 1>&2
 fi
 cd "$RUN_DIR"
-"${MPICXX}" -O3 -std=c++17 -fopenmp -march=native -I. -Ihnswlib main.cc -o ${EXE}
+"${MPICXX}" -O3 -std=c++17 -fopenmp -march=native -I. -I.. -I../hnswlib main.cc -o ${EXE}
 
 NODES=$(cat "$PBS_NODEFILE" | sort | uniq)
 NODE_COUNT=$(printf "%s\n" "$NODES" | wc -l | tr -d ' ')
